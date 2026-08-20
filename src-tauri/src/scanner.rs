@@ -4,8 +4,9 @@ use crate::adapters::{DetectCtx, HarnessAdapter};
 use crate::db::Db;
 use crate::models::{AdapterScanStat, ScanProgress, ScanReport};
 
-/// 解析器版本：解析逻辑产出字段发生变化（如新增费用估算）时 +1，
-/// 触发一次自动全量重扫，避免旧索引行长期缺失新字段
+/// 解析器版本：解析逻辑产出字段发生变化（如新增费用估算）时 +1。
+/// 按 harness 分别记录迁移状态——全局单一版本会在某 harness 恰好未安装时
+/// 误标完成，导致其旧会话永远不补算新字段
 const PARSE_VERSION: &str = "3";
 
 /// 扫描所有 adapter：enumerate → 增量跳过 → parse → upsert。
@@ -19,9 +20,6 @@ pub fn scan_all(
     progress: Option<&dyn Fn(ScanProgress)>,
 ) -> ScanReport {
     let start = Instant::now();
-    // 解析器升级：强制一次全量，并允许 prune（仍受零错误护栏保护）
-    let parse_outdated = db.get_setting("parse_version").as_deref() != Some(PARSE_VERSION);
-    let full = full || parse_outdated;
     let mut stats = Vec::new();
     let adapter_count = adapters.iter().filter(|a| a.detect(ctx)).count();
     let mut adapter_index = 0usize;
@@ -40,6 +38,11 @@ pub fn scan_all(
             stats.push(stat);
             continue;
         }
+        // 按 harness 的迁移版本：未检测到的 harness 不会被误标，
+        // 之后恢复时仍会强制全量补算
+        let version_key = format!("parse_version:{}", adapter.id());
+        let adapter_outdated = db.get_setting(&version_key).as_deref() != Some(PARSE_VERSION);
+        let full_for_adapter = full || adapter_outdated;
         let this_index = adapter_index;
         adapter_index += 1;
         let roots = adapter.roots(ctx);
@@ -77,7 +80,7 @@ pub fn scan_all(
             // 后面的统一进度上报点，而不是 continue 绕过回调
             (|| {
                 // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
-                if !full {
+                if !full_for_adapter {
                     if let Some(id) = raw.identity.as_deref() {
                         if db.stamp(adapter.id(), id) == Some((raw.size, raw.mtime_ms)) {
                             stat.skipped += 1;
@@ -85,9 +88,9 @@ pub fn scan_all(
                         }
                     }
                 }
-                let Ok(parsed_probe) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    adapter.parse(&raw)
-                })) else {
+                let Ok(parsed_probe) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| adapter.parse(&raw)))
+                else {
                     stat.errors += 1;
                     return;
                 };
@@ -124,17 +127,17 @@ pub fn scan_all(
         // - 有任何错误（目录遍历失败/解析失败/索引损坏/必需根目录消失）→ 不动索引
         // - 零错误但一条都没扫到 → 根目录可读但确实是空的，正常清理
         stat.errors += adapter.required_roots_missing(ctx);
-        if full && stat.errors == 0 {
+        if full_for_adapter && stat.errors == 0 {
             let _ = db.prune_not_in(adapter.id(), &seen_ids);
+        }
+        // 只有零错误完成才标记该 harness 已迁移
+        if stat.errors == 0 {
+            let _ = db.set_setting(&version_key, PARSE_VERSION);
         }
         stats.push(stat);
     }
 
     let total = db.counts().map(|c| c.total).unwrap_or(0);
-    let any_errors = stats.iter().any(|s| s.errors > 0);
-    if !any_errors {
-        let _ = db.set_setting("parse_version", PARSE_VERSION);
-    }
     ScanReport {
         adapters: stats,
         total_sessions: total,
@@ -151,7 +154,8 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
 
     fn temp_db(tag: &str) -> (Db, PathBuf) {
-        let p = std::env::temp_dir().join(format!("sessionhub-ut-{}-{}.db", tag, std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("sessionhub-ut-{}-{}.db", tag, std::process::id()));
         let _ = std::fs::remove_file(&p);
         (Db::open(&p).unwrap(), p)
     }
@@ -252,8 +256,9 @@ mod tests {
     fn full_scan_prune_matrix() {
         let (db, path) = temp_db("prune");
         let shared = Arc::new(MockShared::default());
-        let adapters: Vec<Box<dyn HarnessAdapter>> =
-            vec![Box::new(MockAdapter { shared: shared.clone() })];
+        let adapters: Vec<Box<dyn HarnessAdapter>> = vec![Box::new(MockAdapter {
+            shared: shared.clone(),
+        })];
         let ctx = DetectCtx::new();
 
         // 初始：a、b 入库
@@ -294,8 +299,9 @@ mod tests {
     fn full_scan_prune_blocked_by_missing_required_root() {
         let (db, path) = temp_db("reqroot");
         let shared = Arc::new(MockShared::default());
-        let adapters: Vec<Box<dyn HarnessAdapter>> =
-            vec![Box::new(MockAdapter { shared: shared.clone() })];
+        let adapters: Vec<Box<dyn HarnessAdapter>> = vec![Box::new(MockAdapter {
+            shared: shared.clone(),
+        })];
         let ctx = DetectCtx::new();
 
         mock_set(&shared, &["a", "b"], 0, &[]);
@@ -338,7 +344,10 @@ mod tests {
             serde_json::to_string_pretty(&report).unwrap_or_default()
         );
         if report.adapters.iter().any(|a| a.detected) {
-            assert!(report.total_sessions > 0, "检测到 harness 但一个会话都没解析出来");
+            assert!(
+                report.total_sessions > 0,
+                "检测到 harness 但一个会话都没解析出来"
+            );
         }
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(tmp.with_extension("db-wal"));

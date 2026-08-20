@@ -70,7 +70,9 @@ fn aggregate_usage(
                SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), \
                SUM(cache_creation_input_tokens), SUM(cache_read_input_tokens) \
                FROM model_usage GROUP BY session_id, model_id";
-    let Ok(mut stmt) = conn.prepare(sql) else { return map };
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return map;
+    };
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -143,8 +145,18 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
     let has = |c: &str| cols.iter().any(|x| x == c);
     // 防御式：只选存在的列，schema 演进也不会崩
     let wanted = [
-        "id", "directory", "title", "time_created", "time_updated", "cost", "tokens_input",
-        "tokens_output", "tokens_reasoning", "tokens_cache_read", "tokens_cache_write", "parent_id",
+        "id",
+        "directory",
+        "title",
+        "time_created",
+        "time_updated",
+        "cost",
+        "tokens_input",
+        "tokens_output",
+        "tokens_reasoning",
+        "tokens_cache_read",
+        "tokens_cache_write",
+        "parent_id",
     ];
     let selected: Vec<&str> = wanted.into_iter().filter(|c| has(c)).collect();
     if !selected.contains(&"id") {
@@ -155,8 +167,12 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
     // 每个会话的消息数（单列聚合查询，失败就放弃该字段）
     let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     if table_exists(&conn, "message") {
-        if let Ok(mut st) = conn.prepare("SELECT session_id, COUNT(*) FROM message GROUP BY session_id") {
-            if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        if let Ok(mut st) =
+            conn.prepare("SELECT session_id, COUNT(*) FROM message GROUP BY session_id")
+        {
+            if let Ok(rows) =
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            {
                 for r in rows.flatten() {
                     counts.insert(r.0, r.1.max(0) as u32);
                 }
@@ -221,9 +237,8 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
                                 let identity = json_str(&row, "id").map(|s| s.to_string());
                                 if let Some(id) = identity.as_deref() {
                                     if let Some(c) = counts.get(id) {
-                                        row.as_object_mut().map(|m| {
-                                            m.insert("message_count".into(), (*c).into())
-                                        });
+                                        row.as_object_mut()
+                                            .map(|m| m.insert("message_count".into(), (*c).into()));
                                     }
                                     // 注入聚合用量：仅在 session 行本身缺省时
                                     if let Some(u) = usage.get(id) {
@@ -232,7 +247,8 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
                                                 .map(|v| v.is_null() || v.as_f64() == Some(0.0))
                                                 .unwrap_or(true)
                                         };
-                                        let mut updates: Vec<(&str, serde_json::Value)> = Vec::new();
+                                        let mut updates: Vec<(&str, serde_json::Value)> =
+                                            Vec::new();
                                         if missing("tokens_input") {
                                             updates.push(("tokens_input", u.0.into()));
                                         }
@@ -286,9 +302,12 @@ fn parse_row(cfg: &SqliteConfig, raw: &RawRef) -> Option<Session> {
     let tokens_in = json_u64(row, "tokens_input").unwrap_or(0)
         + json_u64(row, "tokens_cache_read").unwrap_or(0)
         + json_u64(row, "tokens_cache_write").unwrap_or(0);
-    let tokens_out =
-        json_u64(row, "tokens_output").unwrap_or(0) + json_u64(row, "tokens_reasoning").unwrap_or(0);
-    let cost = row.get("cost").and_then(|c| c.as_f64()).filter(|c| *c > 0.0);
+    let tokens_out = json_u64(row, "tokens_output").unwrap_or(0)
+        + json_u64(row, "tokens_reasoning").unwrap_or(0);
+    let cost = row
+        .get("cost")
+        .and_then(|c| c.as_f64())
+        .filter(|c| *c > 0.0);
     let title = json_str(row, "title").unwrap_or("").to_string();
     let is_sub = row.get("parent_id").and_then(|p| p.as_str()).is_some();
 
@@ -305,7 +324,11 @@ fn parse_row(cfg: &SqliteConfig, raw: &RawRef) -> Option<Session> {
         ended_at: updated,
         message_count: json_u64(row, "message_count").map(|n| n as u32),
         tokens_in: if tokens_in > 0 { Some(tokens_in) } else { None },
-        tokens_out: if tokens_out > 0 { Some(tokens_out) } else { None },
+        tokens_out: if tokens_out > 0 {
+            Some(tokens_out)
+        } else {
+            None
+        },
         cost_usd: cost,
         status: derive_status(updated.unwrap_or(raw.mtime_ms)),
         raw_path: raw.path.to_string_lossy().into_owned(),
@@ -316,16 +339,24 @@ fn parse_row(cfg: &SqliteConfig, raw: &RawRef) -> Option<Session> {
 }
 
 fn read_messages_db(db_path: &Path, session_id: &str, limit: usize) -> Vec<MessagePreview> {
-    let Some(conn) = open_ro(db_path) else { return Vec::new() };
+    let Some(conn) = open_ro(db_path) else {
+        return Vec::new();
+    };
     if !table_exists(&conn, "message") || !table_exists(&conn, "part") {
         return Vec::new();
     }
     let sql = "SELECT m.data, p.data, p.time_created FROM part p \
                JOIN message m ON p.message_id = m.id \
                WHERE p.session_id = ?1 ORDER BY p.time_created ASC";
-    let Ok(mut stmt) = conn.prepare(sql) else { return Vec::new() };
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return Vec::new();
+    };
     let rows = stmt.query_map([session_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
     });
     let mut msgs: Vec<MessagePreview> = Vec::new();
     if let Ok(rows) = rows {
@@ -340,7 +371,9 @@ fn read_messages_db(db_path: &Path, session_id: &str, limit: usize) -> Vec<Messa
             if json_str(&p, "type") != Some("text") {
                 continue;
             }
-            let Some(text) = json_str(&p, "text") else { continue };
+            let Some(text) = json_str(&p, "text") else {
+                continue;
+            };
             let text = text.trim();
             if text.is_empty() {
                 continue;

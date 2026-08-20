@@ -19,7 +19,11 @@ fn extract_codex_text(content: &serde_json::Value) -> Option<String> {
             out.push_str(t);
         }
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// 在 token_count 之类的 payload 里递归找 token 数字（格式无文档，防御式）
@@ -152,7 +156,8 @@ impl HarnessAdapter for CodexAdapter {
                             msg_count += 1;
                             let role = json_str(&payload, "role").unwrap_or("");
                             if role == "user" && first_user_text.is_none() {
-                                if let Some(t) = payload.get("content").and_then(extract_codex_text) {
+                                if let Some(t) = payload.get("content").and_then(extract_codex_text)
+                                {
                                     let t = t.trim().to_string();
                                     // 跳过环境上下文等注入内容
                                     if !t.is_empty() && !t.starts_with('<') {
@@ -196,23 +201,35 @@ impl HarnessAdapter for CodexAdapter {
 
         // GPT-5 系刊例价估算（输入 $1.25/M，输出 $10/M）
         let cost = {
-            let usd = (tokens_in.unwrap_or(0) as f64 * 1.25 + tokens_out.unwrap_or(0) as f64 * 10.0)
+            let usd = (tokens_in.unwrap_or(0) as f64 * 1.25
+                + tokens_out.unwrap_or(0) as f64 * 10.0)
                 / 1e6;
-            if usd > 0.0 { Some(usd) } else { None }
+            if usd > 0.0 {
+                Some(usd)
+            } else {
+                None
+            }
         };
 
         Some(Session {
             session_id,
             harness_id: self.id().to_string(),
             project_path: cwd,
-            title: first_user_text.as_deref().map(|t| truncate(t, 80)).unwrap_or_default(),
+            title: first_user_text
+                .as_deref()
+                .map(|t| truncate(t, 80))
+                .unwrap_or_default(),
             started_at: first_ts,
             ended_at: last_ts,
             message_count: if msg_count > 0 { Some(msg_count) } else { None },
             tokens_in,
             tokens_out,
             cost_usd: cost,
-            status: if archived { "archived".to_string() } else { derive_status(raw.mtime_ms) },
+            status: if archived {
+                "archived".to_string()
+            } else {
+                derive_status(raw.mtime_ms)
+            },
             raw_path: raw.path.to_string_lossy().into_owned(),
             source_format: "jsonl".to_string(),
             file_size: raw.size,

@@ -21,7 +21,10 @@ pub struct AppState {
 
 impl AppState {
     fn adapter(&self, id: &str) -> Option<&(dyn HarnessAdapter + 'static)> {
-        self.adapters.iter().find(|a| a.id() == id).map(|a| a.as_ref())
+        self.adapters
+            .iter()
+            .find(|a| a.id() == id)
+            .map(|a| a.as_ref())
     }
 
     /// 填充每会话的 raw_usable 标志，前端据此禁用危险按钮
@@ -49,7 +52,7 @@ impl AppState {
             .ok_or_else(|| format!("未知 harness：{harness_id}"))?;
         if !adapter.can_use_raw_path(&dto.session) {
             return Err(
-                "该会话的独立存储目录不存在，raw 指向共享/全局文件，此操作已阻止".to_string()
+                "该会话的独立存储目录不存在，raw 指向共享/全局文件，此操作已阻止".to_string(),
             );
         }
         Ok(dto)
@@ -81,7 +84,13 @@ fn scan_sessions(app: tauri::AppHandle, state: tauri::State<AppState>, full: boo
     let emit = |p: ScanProgress| {
         let _ = app.emit("scan-progress", p);
     };
-    scanner::scan_all(&state.db, &state.adapters, &DetectCtx::new(), full, Some(&emit))
+    scanner::scan_all(
+        &state.db,
+        &state.adapters,
+        &DetectCtx::new(),
+        full,
+        Some(&emit),
+    )
 }
 
 #[tauri::command]
@@ -106,7 +115,10 @@ fn list_sessions(
 }
 
 #[tauri::command]
-fn search_sessions(state: tauri::State<AppState>, query: String) -> Result<Vec<SessionDto>, String> {
+fn search_sessions(
+    state: tauri::State<AppState>,
+    query: String,
+) -> Result<Vec<SessionDto>, String> {
     let mut dtos = state.db.search(&query, 300).map_err(|e| e.to_string())?;
     state.apply_raw_usable(&mut dtos);
     Ok(dtos)
@@ -295,9 +307,8 @@ fn watcher_status(state: tauri::State<AppState>) -> bool {
 pub fn run() {
     let _ = actions::ensure_hub_dirs();
     let db_path = actions::hub_dir().join("sessionhub.db");
-    let db = Db::open(&db_path).unwrap_or_else(|e| {
-        panic!("无法打开 SessionHub 数据库 {}: {e}", db_path.display())
-    });
+    let db = Db::open(&db_path)
+        .unwrap_or_else(|e| panic!("无法打开 SessionHub 数据库 {}: {e}", db_path.display()));
 
     let state = AppState {
         db: Arc::new(db),

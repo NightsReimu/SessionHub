@@ -27,7 +27,9 @@ pub fn launch_in_terminal(command: &str, cwd: Option<&str>) -> Result<String, St
     #[cfg(target_os = "macos")]
     {
         let script = match cwd {
-            Some(c) if !c.is_empty() => format!("#!/bin/zsh\ncd {} && {}\n", shell_quote(c), command),
+            Some(c) if !c.is_empty() => {
+                format!("#!/bin/zsh\ncd {} && {}\n", shell_quote(c), command)
+            }
             _ => format!("#!/bin/zsh\n{}\n", command),
         };
         let dir = hub_dir().join("tmp");
@@ -44,7 +46,7 @@ pub fn launch_in_terminal(command: &str, cwd: Option<&str>) -> Result<String, St
             .arg(&path)
             .spawn()
             .map_err(|e| format!("打开 Terminal 失败：{e}"))?;
-        return Ok(command.to_string());
+        Ok(command.to_string())
     }
     #[cfg(target_os = "windows")]
     {
@@ -68,12 +70,14 @@ pub fn launch_in_terminal(command: &str, cwd: Option<&str>) -> Result<String, St
                 .spawn()
                 .map_err(|e| format!("打开终端失败：{e}"))?;
         }
-        return Ok(command.to_string());
+        Ok(command.to_string())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let shell_cmd = match cwd {
-            Some(c) if !c.is_empty() => format!("cd {} && {}; exec $SHELL", shell_quote(c), command),
+            Some(c) if !c.is_empty() => {
+                format!("cd {} && {}; exec $SHELL", shell_quote(c), command)
+            }
             _ => format!("{}; exec $SHELL", command),
         };
         for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
@@ -121,7 +125,10 @@ pub fn backup_raw(session: &Session) -> Result<PathBuf, String> {
         return Err(format!("原始路径不存在：{}", session.raw_path));
     }
     let day = chrono::Local::now().format("%Y%m%d").to_string();
-    let dir = hub_dir().join("backups").join(&session.harness_id).join(day);
+    let dir = hub_dir()
+        .join("backups")
+        .join(&session.harness_id)
+        .join(day);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     if src.is_file() {
@@ -155,7 +162,8 @@ pub fn backup_raw(session: &Session) -> Result<PathBuf, String> {
             continue;
         }
         if p.is_dir() {
-            zip.add_directory(format!("{rel}/"), options).map_err(|e| e.to_string())?;
+            zip.add_directory(format!("{rel}/"), options)
+                .map_err(|e| e.to_string())?;
         } else {
             zip.start_file(rel, options).map_err(|e| e.to_string())?;
             let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
@@ -168,13 +176,23 @@ pub fn backup_raw(session: &Session) -> Result<PathBuf, String> {
 }
 
 /// 导出：Markdown（元数据 + 消息）或 JSONL（原始文件复制 / 消息行）
-pub fn export_session(session: &Session, messages: &[crate::models::MessagePreview], format: &str) -> Result<PathBuf, String> {
+pub fn export_session(
+    session: &Session,
+    messages: &[crate::models::MessagePreview],
+    format: &str,
+) -> Result<PathBuf, String> {
     let dir = hub_dir().join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let safe_id: String = session
         .session_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let base = format!("{}-{}-{}", session.harness_id, safe_id, ts_suffix());
 
@@ -213,15 +231,32 @@ pub fn export_session(session: &Session, messages: &[crate::models::MessagePrevi
         _ => {
             let dest = unique_dest(&dir, &format!("{base}.md"));
             let mut md = String::new();
-            md.push_str(&format!("# {}\n\n", if session.title.is_empty() { "(无标题)" } else { &session.title }));
+            md.push_str(&format!(
+                "# {}\n\n",
+                if session.title.is_empty() {
+                    "(无标题)"
+                } else {
+                    &session.title
+                }
+            ));
             md.push_str(&format!("- Harness: `{}`\n", session.harness_id));
             md.push_str(&format!("- Session ID: `{}`\n", session.session_id));
             md.push_str(&format!("- 项目: `{}`\n", session.project_path));
             if let Some(t) = session.started_at {
-                md.push_str(&format!("- 开始: {}\n", chrono::DateTime::from_timestamp_millis(t).map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()));
+                md.push_str(&format!(
+                    "- 开始: {}\n",
+                    chrono::DateTime::from_timestamp_millis(t)
+                        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_default()
+                ));
             }
             if let Some(t) = session.ended_at {
-                md.push_str(&format!("- 最后活动: {}\n", chrono::DateTime::from_timestamp_millis(t).map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()));
+                md.push_str(&format!(
+                    "- 最后活动: {}\n",
+                    chrono::DateTime::from_timestamp_millis(t)
+                        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_default()
+                ));
             }
             md.push_str(&format!("- 原始文件: `{}`\n\n---\n\n", session.raw_path));
             if messages.is_empty() {
@@ -250,7 +285,11 @@ pub fn reveal_raw(session: &Session) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").arg("-R").arg(path).spawn().map_err(|e| e.to_string())?;
+        Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "windows")]
     {
@@ -261,8 +300,15 @@ pub fn reveal_raw(session: &Session) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let dir = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
-        Command::new("xdg-open").arg(dir).spawn().map_err(|e| e.to_string())?;
+        let dir = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

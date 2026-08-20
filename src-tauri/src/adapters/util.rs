@@ -68,7 +68,11 @@ pub fn extract_claude_text(content: &serde_json::Value) -> Option<String> {
                     }
                 }
             }
-            if out.is_empty() { None } else { Some(out) }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
         }
         _ => None,
     }
@@ -96,7 +100,8 @@ pub fn json_str<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a str> {
 }
 
 pub fn json_i64(v: &serde_json::Value, key: &str) -> Option<i64> {
-    v.get(key).and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
+    v.get(key)
+        .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
 }
 
 pub fn json_u64(v: &serde_json::Value, key: &str) -> Option<u64> {

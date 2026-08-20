@@ -15,7 +15,9 @@ impl DshAdapter {
     fn session_dirs(ctx: &DetectCtx) -> HashMap<String, PathBuf> {
         let mut map = HashMap::new();
         let root = ctx.join(".dsh/sessions");
-        let Ok(projects) = std::fs::read_dir(&root) else { return map };
+        let Ok(projects) = std::fs::read_dir(&root) else {
+            return map;
+        };
         for p in projects.flatten() {
             let pdir = p.path();
             if !pdir.is_dir() {
@@ -111,7 +113,10 @@ impl HarnessAdapter for DshAdapter {
         let inline = raw.inline.as_ref()?;
         let key = json_str(inline, "key")?.to_string();
         let v = inline.get("value")?;
-        let identity = v.get("identity").cloned().unwrap_or(serde_json::Value::Null);
+        let identity = v
+            .get("identity")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let rows = v.get("rows").cloned().unwrap_or(serde_json::Value::Null);
 
         let created = json_i64(&identity, "createdAt");
@@ -242,7 +247,11 @@ impl HarnessAdapter for DshAdapter {
             if text_val.is_empty() {
                 continue;
             }
-            let role = if ty == "user/message" { "user" } else { "assistant" };
+            let role = if ty == "user/message" {
+                "user"
+            } else {
+                "assistant"
+            };
             ring.push_back(MessagePreview {
                 role: role.to_string(),
                 text: truncate(&text_val, 2000),

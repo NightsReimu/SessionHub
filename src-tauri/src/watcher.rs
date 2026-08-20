@@ -38,7 +38,9 @@ pub fn start(
             // 文件型根（如 opencode.db / projcache.json）监听其父目录
             let (dir, mode) = if root.is_file() {
                 (
-                    root.parent().map(|p| p.to_path_buf()).unwrap_or(root.clone()),
+                    root.parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or(root.clone()),
                     RecursiveMode::NonRecursive,
                 )
             } else {
@@ -58,9 +60,15 @@ pub fn start(
             Ok(_) => {
                 // 去抖：排空积压事件
                 while rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
-                let report = scan_all(&db, &adapters, &DetectCtx::new(), false, Some(&|p| {
-                    let _ = app.emit("scan-progress", p);
-                }));
+                let report = scan_all(
+                    &db,
+                    &adapters,
+                    &DetectCtx::new(),
+                    false,
+                    Some(&|p| {
+                        let _ = app.emit("scan-progress", p);
+                    }),
+                );
                 let _ = app.emit("scan-update", report);
             }
             Err(RecvTimeoutError::Timeout) => continue,

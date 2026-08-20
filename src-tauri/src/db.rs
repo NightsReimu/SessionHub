@@ -208,10 +208,7 @@ impl Db {
         offset: usize,
     ) -> DbResult<Vec<SessionDto>> {
         let conn = self.conn.lock();
-        let mut sql = format!(
-            "SELECT {} FROM sessions",
-            Self::SESSION_COLS
-        );
+        let mut sql = format!("SELECT {} FROM sessions", Self::SESSION_COLS);
         let mut conds: Vec<String> = Vec::new();
         if let Some(h) = harness {
             conds.push(format!("harness_id = '{}'", h.replace('\'', "''")));
@@ -235,7 +232,11 @@ impl Db {
         let mut out = Vec::new();
         for s in rows.flatten() {
             let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
-            out.push(SessionDto { session: s, meta, raw_usable: true });
+            out.push(SessionDto {
+                session: s,
+                meta,
+                raw_usable: true,
+            });
         }
         Ok(out)
     }
@@ -250,7 +251,11 @@ impl Db {
             .query_row(&sql, params![harness, id], Self::row_to_session)
             .ok()?;
         let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
-        Some(SessionDto { session: s, meta, raw_usable: true })
+        Some(SessionDto {
+            session: s,
+            meta,
+            raw_usable: true,
+        })
     }
 
     pub fn search(&self, query: &str, limit: usize) -> DbResult<Vec<SessionDto>> {
@@ -302,7 +307,11 @@ impl Db {
             .into_iter()
             .map(|s| {
                 let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
-                SessionDto { session: s, meta, raw_usable: true }
+                SessionDto {
+                    session: s,
+                    meta,
+                    raw_usable: true,
+                }
             })
             .collect())
     }
@@ -321,7 +330,9 @@ impl Db {
                 serde_json::to_string(&meta.tags).unwrap_or_else(|_| "[]".to_string()),
                 meta.note,
                 if meta.favorite { 1 } else { 0 },
-                meta.custom_title.as_deref().filter(|t| !t.trim().is_empty()),
+                meta.custom_title
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty()),
             ],
         )?;
         if let Ok(rowid) = conn.query_row::<i64, _, _>(
@@ -435,7 +446,8 @@ impl Db {
         let sql = format!(
             "SELECT {} FROM sessions \
              ORDER BY (COALESCE(tokens_in,0) + COALESCE(tokens_out,0)) DESC LIMIT {}",
-            Self::SESSION_COLS, top_n
+            Self::SESSION_COLS,
+            top_n
         );
         let mut top_sessions = Vec::new();
         {
@@ -443,7 +455,11 @@ impl Db {
             let rows = stmt.query_map([], Self::row_to_session)?;
             for s in rows.flatten() {
                 let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
-                top_sessions.push(SessionDto { session: s, meta, raw_usable: true });
+                top_sessions.push(SessionDto {
+                    session: s,
+                    meta,
+                    raw_usable: true,
+                });
             }
         }
         Ok(crate::models::StatsOverview {
@@ -483,7 +499,11 @@ mod tests {
     }
 
     fn temp_db(tag: &str) -> (Db, std::path::PathBuf) {
-        let p = std::env::temp_dir().join(format!("sessionhub-ut-db-{}-{}.db", tag, std::process::id()));
+        let p = std::env::temp_dir().join(format!(
+            "sessionhub-ut-db-{}-{}.db",
+            tag,
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         (Db::open(&p).unwrap(), p)
     }
@@ -527,7 +547,11 @@ mod tests {
         assert_eq!(db.counts().unwrap().favorites, 1);
 
         db.delete_session_row("h", "s1").unwrap();
-        assert_eq!(db.counts().unwrap().favorites, 0, "删除会话后孤立 meta 不应计入收藏");
+        assert_eq!(
+            db.counts().unwrap().favorites,
+            0,
+            "删除会话后孤立 meta 不应计入收藏"
+        );
         assert!(db.list_sessions(None, true, 10, 0).unwrap().is_empty());
         cleanup(&path);
     }
@@ -549,7 +573,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            db.get_session("h", "s1").unwrap().meta.custom_title.as_deref(),
+            db.get_session("h", "s1")
+                .unwrap()
+                .meta
+                .custom_title
+                .as_deref(),
             Some("我的标题")
         );
 

@@ -28,7 +28,11 @@ impl PlaceholderAdapter {
         Self {
             id: "kimi-code",
             display: "Kimi Code",
-            candidates: &[".kimi", "Library/Application Support/kimi", "AppData/Roaming/kimi"],
+            candidates: &[
+                ".kimi",
+                "Library/Application Support/kimi",
+                "AppData/Roaming/kimi",
+            ],
         }
     }
     pub fn openclaw() -> Self {
@@ -117,7 +121,9 @@ impl GenericAdapter {
             .map(|r| ctx.join(r))
             .filter(|p| p.is_dir())
             .collect();
-        roots.extend(Self::custom_roots_from(&ctx.home.join("SessionHub/adapters.json")));
+        roots.extend(Self::custom_roots_from(
+            &ctx.home.join("SessionHub/adapters.json"),
+        ));
         roots.sort();
         roots.dedup();
         roots
@@ -263,7 +269,10 @@ mod tests {
         let cfg = base.join("adapters.json");
         std::fs::write(
             &cfg,
-            format!(r#"{{"generic_extra_roots":["{}", "/no/such/dir-xyz"]}}"#, extra.display()),
+            format!(
+                r#"{{"generic_extra_roots":["{}", "/no/such/dir-xyz"]}}"#,
+                extra.display()
+            ),
         )
         .unwrap();
         assert_eq!(GenericAdapter::custom_roots_from(&cfg), vec![extra.clone()]);
@@ -289,7 +298,10 @@ mod tests {
         let a = GenericAdapter;
         let s1 = a.parse(&file_raw_ref(&f1).unwrap()).unwrap();
         let s2 = a.parse(&file_raw_ref(&f2).unwrap()).unwrap();
-        assert_ne!(s1.session_id, s2.session_id, "同名无 ID 文件不得共享 session_id");
+        assert_ne!(
+            s1.session_id, s2.session_id,
+            "同名无 ID 文件不得共享 session_id"
+        );
         assert_eq!(s1.raw_path, f1.to_string_lossy());
         assert_eq!(s2.raw_path, f2.to_string_lossy());
 

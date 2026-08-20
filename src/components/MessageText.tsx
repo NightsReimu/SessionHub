@@ -22,23 +22,41 @@ function renderInline(text: string): React.ReactNode {
   });
 }
 
+/** 常见 info string 语言名：只有命中才删除首行，无语言代码块的首行必须保留 */
+const LANGS = new Set([
+  "rust", "rs", "js", "javascript", "ts", "typescript", "tsx", "jsx",
+  "python", "py", "bash", "sh", "zsh", "shell", "json", "jsonl", "yaml", "yml",
+  "toml", "xml", "html", "css", "scss", "sql", "go", "java", "c", "h",
+  "cpp", "cc", "cs", "csharp", "swift", "kotlin", "kt", "rb", "ruby",
+  "md", "markdown", "text", "plain", "plaintext", "dockerfile", "diff",
+]);
+
 /** 按 ``` 切分代码块渲染消息文本，奇数段为代码块 */
 export default function MessageText({ text }: { text: string }) {
   const blocks = text.split("```");
   return (
     <>
-      {blocks.map((b, i) =>
-        i % 2 === 1 ? (
-          <pre
-            key={i}
-            className="my-1.5 overflow-x-auto rounded-lg border border-line bg-page px-2.5 py-2 text-[12px] leading-relaxed select-text"
-          >
-            {b.replace(/^[\w-]*\n/, "")}
-          </pre>
-        ) : (
-          <span key={i}>{renderInline(b)}</span>
-        )
-      )}
+      {blocks.map((b, i) => {
+        if (i % 2 === 1) {
+          let code = b;
+          const nl = code.indexOf("\n");
+          if (nl > 0) {
+            const first = code.slice(0, nl).trim().toLowerCase();
+            if (LANGS.has(first)) {
+              code = code.slice(nl + 1);
+            }
+          }
+          return (
+            <pre
+              key={i}
+              className="my-1.5 overflow-x-auto rounded-lg border border-line bg-page px-2.5 py-2 text-[12px] leading-relaxed select-text"
+            >
+              {code}
+            </pre>
+          );
+        }
+        return <span key={i}>{renderInline(b)}</span>;
+      })}
     </>
   );
 }
