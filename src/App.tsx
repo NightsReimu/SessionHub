@@ -19,12 +19,14 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionDto[]>([]);
   const [filter, setFilter] = useState<string>("all"); // "all" | "fav" | harness id
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [selected, setSelected] = useState<SessionDto | null>(null);
   const [scanning, setScanning] = useState(false);
   const [watching, setWatching] = useState(false);
   const [hub, setHub] = useState<HubPaths | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const searchTimer = useRef<number | null>(null);
+  // 请求序号：只应用最后一次请求的结果，防止乱序响应覆盖新结果
+  const reqSeq = useRef(0);
 
   const toast = useCallback((kind: Toast["kind"], text: string) => {
     const id = toastSeq++;
@@ -41,18 +43,19 @@ export default function App() {
   }, []);
 
   const refreshList = useCallback(async () => {
+    const seq = ++reqSeq.current;
     try {
-      if (query.trim()) {
-        setSessions(await api.searchSessions(query.trim()));
-      } else {
-        setSessions(
-          await api.listSessions(filter === "all" ? null : filter === "fav" ? null : filter, filter === "fav")
-        );
-      }
+      const data = debouncedQuery
+        ? await api.searchSessions(debouncedQuery)
+        : await api.listSessions(
+            filter === "all" ? null : filter === "fav" ? null : filter,
+            filter === "fav"
+          );
+      if (seq === reqSeq.current) setSessions(data);
     } catch (e) {
       console.error(e);
     }
-  }, [filter, query]);
+  }, [filter, debouncedQuery]);
 
   const runScan = useCallback(
     async (full: boolean) => {
@@ -90,8 +93,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => {
     refreshList();
-  }, [filter, refreshList]);
+  }, [filter, debouncedQuery, refreshList]);
 
   useEffect(() => {
     const un = listen("scan-update", () => {
@@ -105,8 +113,6 @@ export default function App() {
 
   const onQueryChange = (q: string) => {
     setQuery(q);
-    if (searchTimer.current) window.clearTimeout(searchTimer.current);
-    searchTimer.current = window.setTimeout(() => refreshList(), 300);
   };
 
   const toggleWatcher = async () => {

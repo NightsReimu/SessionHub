@@ -62,7 +62,10 @@ pub fn scan_all(
                 }
             }
         }
-        if full {
+        // 全量扫描的 prune 安全措施：
+        // 1) 有任何解析错误（文件写入中/权限问题/索引 JSON 短暂损坏）时不动索引
+        // 2) 什么都没扫到时无法区分“全被删了”和“根目录暂时不可读”，也不动索引
+        if full && stat.errors == 0 && stat.scanned > 0 {
             let _ = db.prune_not_in(adapter.id(), &seen_ids);
         }
         stats.push(stat);
@@ -81,8 +84,11 @@ mod tests {
     use super::*;
     use crate::adapters::all_adapters;
 
-    /// 对本机真实 harness 目录做只读冒烟扫描，验证各 adapter 解析与入库
+    /// 对本机真实 harness 目录做只读冒烟扫描，验证各 adapter 解析与入库。
+    /// 依赖开发者机器上实际装有 harness 会话，默认跳过：
+    /// `cargo test scan_real_machine_smoke -- --ignored --nocapture`
     #[test]
+    #[ignore = "依赖本机真实 harness 数据，CI/干净机器上无意义，手动运行"]
     fn scan_real_machine_smoke() {
         let tmp = std::env::temp_dir().join(format!("sessionhub-test-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
@@ -93,7 +99,9 @@ mod tests {
             "{}",
             serde_json::to_string_pretty(&report).unwrap_or_default()
         );
-        assert!(report.total_sessions > 0, "本机应能扫描到会话");
+        if report.adapters.iter().any(|a| a.detected) {
+            assert!(report.total_sessions > 0, "检测到 harness 但一个会话都没解析出来");
+        }
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(tmp.with_extension("db-wal"));
         let _ = std::fs::remove_file(tmp.with_extension("db-shm"));

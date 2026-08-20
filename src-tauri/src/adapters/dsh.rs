@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::claude_code::non_empty;
@@ -179,21 +178,30 @@ impl HarnessAdapter for DshAdapter {
         }
     }
 
+    /// raw_path 回退到全局 session_projcache.json 时禁止删除，
+    /// 否则会把整个 DSH 会话索引移入回收站
+    fn can_delete_session(&self, s: &Session) -> bool {
+        !s.raw_path.ends_with("session_projcache.json")
+    }
+
     fn read_messages(&self, s: &Session, limit: usize) -> Vec<MessagePreview> {
+        use std::collections::VecDeque;
+        use std::io::{BufRead, BufReader};
+
         let zstd_path = PathBuf::from(&s.raw_path).join("session.jsonl.zstd");
         let Ok(file) = std::fs::File::open(&zstd_path) else {
             return Vec::new();
         };
-        let Ok(mut decoder) = zstd::stream::read::Decoder::new(file) else {
+        let Ok(decoder) = zstd::stream::read::Decoder::new(file) else {
             return Vec::new();
         };
-        let mut text = String::new();
-        if decoder.read_to_string(&mut text).is_err() {
-            return Vec::new();
-        }
-        let mut msgs: Vec<MessagePreview> = Vec::new();
-        for line in text.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        // 流式解压 + 环形缓冲：内存占用只与 limit 相关，与文件大小无关
+        let limit = limit.max(1);
+        let mut ring: VecDeque<MessagePreview> = VecDeque::with_capacity(limit + 1);
+        let reader = BufReader::with_capacity(1 << 20, decoder);
+        for line in reader.lines() {
+            let Ok(line) = line else { continue };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
                 continue;
             };
             let ty = json_str(&v, "type").unwrap_or("");
@@ -209,15 +217,15 @@ impl HarnessAdapter for DshAdapter {
                 continue;
             }
             let role = if ty == "user/message" { "user" } else { "assistant" };
-            msgs.push(MessagePreview {
+            ring.push_back(MessagePreview {
                 role: role.to_string(),
                 text: truncate(&text_val, 2000),
                 timestamp: json_i64(&v, "time"),
             });
+            if ring.len() > limit {
+                ring.pop_front();
+            }
         }
-        if msgs.len() > limit {
-            msgs = msgs.split_off(msgs.len() - limit);
-        }
-        msgs
+        ring.into_iter().collect()
     }
 }

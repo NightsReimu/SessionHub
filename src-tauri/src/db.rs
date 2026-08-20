@@ -342,8 +342,14 @@ impl Db {
     pub fn counts(&self) -> DbResult<Counts> {
         let conn = self.conn.lock();
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
-        let favorites: i64 =
-            conn.query_row("SELECT COUNT(*) FROM session_meta WHERE favorite=1", [], |r| r.get(0))?;
+        // 只统计仍在索引里的会话的收藏，删除会话后遗留的孤立 meta 不算
+        let favorites: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_meta m \
+             JOIN sessions s ON s.harness_id=m.harness_id AND s.session_id=m.session_id \
+             WHERE m.favorite=1",
+            [],
+            |r| r.get(0),
+        )?;
         let mut per_harness = std::collections::HashMap::new();
         let mut stmt =
             conn.prepare("SELECT harness_id, COUNT(*) FROM sessions GROUP BY harness_id")?;

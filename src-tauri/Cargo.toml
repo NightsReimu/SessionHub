@@ -3,7 +3,7 @@ name = "sessionhub"
 version = "0.1.0"
 description = "Unified local session manager for AI coding harnesses"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.82"
 
 [lib]
 name = "sessionhub_lib"

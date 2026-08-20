@@ -90,18 +90,26 @@ fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> Vec<RawRef> {
     }
 
     let mut out = Vec::new();
-    let (size, mtime) = std::fs::metadata(db_path)
-        .ok()
-        .and_then(|md| {
-            let m = md
-                .modified()
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()?
-                .as_millis() as i64;
-            Some((md.len(), m))
-        })
-        .unwrap_or((0, 0));
+    // 扫描戳要感知 WAL：SQLite 的写入先进 *.db-wal，主 .db 的 size/mtime 可能长期不变
+    fn file_stamp(p: &Path) -> (u64, i64) {
+        std::fs::metadata(p)
+            .ok()
+            .and_then(|md| {
+                let m = md
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_millis() as i64;
+                Some((md.len(), m))
+            })
+            .unwrap_or((0, 0))
+    }
+    let (mut size, mut mtime) = file_stamp(db_path);
+    let wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
+    let (wal_size, wal_mtime) = file_stamp(&wal_path);
+    size += wal_size;
+    mtime = mtime.max(wal_mtime);
 
     if let Ok(mut stmt) = conn.prepare(&sql) {
         let col_names: Vec<String> = selected.iter().map(|s| s.to_string()).collect();

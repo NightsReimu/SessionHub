@@ -124,6 +124,9 @@ fn delete_session(
     if !adapter.capabilities().can_delete {
         return Err("该 harness 使用共享数据库存储，不支持删除单个会话".to_string());
     }
+    if !adapter.can_delete_session(&dto.session) {
+        return Err("该会话的独立存储目录不存在，删除会误伤全局索引文件，已阻止".to_string());
+    }
     actions::trash_raw(&dto.session)?;
     let _ = state.db.delete_session_row(&harness_id, &session_id);
     Ok(dto.session.raw_path.clone())

@@ -39,6 +39,12 @@ pub trait HarnessAdapter: Send + Sync {
     /// 续接命令；None 表示不支持
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec>;
     fn capabilities(&self) -> Capabilities;
+    /// 会话级删除许可：默认跟随 capabilities，adapter 可按会话覆盖
+    /// （例如 DSH 在会话目录缺失时 raw_path 回退到全局索引文件，此时禁止删除）
+    fn can_delete_session(&self, s: &Session) -> bool {
+        let _ = s;
+        self.capabilities().can_delete
+    }
     /// 读取消息预览（用于详情面板和导出），不支持则返回空
     fn read_messages(&self, _s: &Session, _limit: usize) -> Vec<MessagePreview> {
         Vec::new()
