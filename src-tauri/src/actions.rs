@@ -118,17 +118,22 @@ fn unique_dest(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{}-{}{}", stem, ts_suffix(), ext))
 }
 
-/// 备份：文件直接复制；目录打包成 zip
-pub fn backup_raw(session: &Session) -> Result<PathBuf, String> {
+/// 备份：文件直接复制；目录打包成 zip。dest_dir 为 None 时进默认 backups 目录
+pub fn backup_raw(session: &Session, dest_dir: Option<&str>) -> Result<PathBuf, String> {
     let src = Path::new(&session.raw_path);
     if !src.exists() {
         return Err(format!("原始路径不存在：{}", session.raw_path));
     }
-    let day = chrono::Local::now().format("%Y%m%d").to_string();
-    let dir = hub_dir()
-        .join("backups")
-        .join(&session.harness_id)
-        .join(day);
+    let dir = match dest_dir {
+        Some(d) => PathBuf::from(d),
+        None => {
+            let day = chrono::Local::now().format("%Y%m%d").to_string();
+            hub_dir()
+                .join("backups")
+                .join(&session.harness_id)
+                .join(day)
+        }
+    };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     if src.is_file() {
@@ -180,9 +185,18 @@ pub fn export_session(
     session: &Session,
     messages: &[crate::models::MessagePreview],
     format: &str,
+    dest_path: Option<&str>,
 ) -> Result<PathBuf, String> {
     let dir = hub_dir().join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // 用户在保存对话框里选了完整路径时直接使用（覆盖已有文件是用户的明确选择）
+    let custom_dest: Option<PathBuf> = dest_path.map(|d| {
+        let p = PathBuf::from(d);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        p
+    });
     let safe_id: String = session
         .session_id
         .chars()
@@ -204,8 +218,13 @@ pub fn export_session(
             let per_session_raw = src.is_file()
                 && matches!(session.source_format.as_str(), "jsonl" | "json" | "generic");
             if per_session_raw {
-                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jsonl");
-                let dest = unique_dest(&dir, &format!("{base}.{ext}"));
+                let dest = match custom_dest {
+                    Some(d) => d,
+                    None => {
+                        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jsonl");
+                        unique_dest(&dir, &format!("{base}.{ext}"))
+                    }
+                };
                 std::fs::copy(src, &dest).map_err(|e| format!("复制失败：{e}"))?;
                 return Ok(dest);
             }
@@ -214,7 +233,10 @@ pub fn export_session(
                     "没有可导出的内容：该会话的消息不可读取，且 raw 不是独立会话文件".to_string(),
                 );
             }
-            let dest = unique_dest(&dir, &format!("{base}.jsonl"));
+            let dest = match custom_dest {
+                Some(d) => d,
+                None => unique_dest(&dir, &format!("{base}.jsonl")),
+            };
             let mut out = String::new();
             for m in messages {
                 out.push_str(
@@ -229,7 +251,10 @@ pub fn export_session(
             Ok(dest)
         }
         _ => {
-            let dest = unique_dest(&dir, &format!("{base}.md"));
+            let dest = match custom_dest {
+                Some(d) => d,
+                None => unique_dest(&dir, &format!("{base}.md")),
+            };
             let mut md = String::new();
             md.push_str(&format!(
                 "# {}\n\n",

@@ -213,9 +213,10 @@ fn backup_session(
     state: tauri::State<AppState>,
     harness_id: String,
     session_id: String,
+    dest_dir: Option<String>,
 ) -> Result<String, String> {
     let dto = state.session_with_usable_raw(&harness_id, &session_id)?;
-    let dest = actions::backup_raw(&dto.session)?;
+    let dest = actions::backup_raw(&dto.session, dest_dir.as_deref())?;
     Ok(dest.to_string_lossy().into_owned())
 }
 
@@ -225,6 +226,7 @@ fn export_session(
     harness_id: String,
     session_id: String,
     format: String,
+    dest_path: Option<String>,
 ) -> Result<String, String> {
     let dto = state
         .db
@@ -234,7 +236,7 @@ fn export_session(
         .adapter(&harness_id)
         .map(|a| a.read_messages(&dto.session, 500))
         .unwrap_or_default();
-    let dest = actions::export_session(&dto.session, &messages, &format)?;
+    let dest = actions::export_session(&dto.session, &messages, &format, dest_path.as_deref())?;
     Ok(dest.to_string_lossy().into_owned())
 }
 
@@ -360,6 +362,7 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             list_adapters,

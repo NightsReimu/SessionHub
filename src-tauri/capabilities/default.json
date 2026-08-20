@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "SessionHub default capabilities",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

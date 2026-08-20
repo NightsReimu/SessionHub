@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { AdapterInfo, MessagePreview, SessionDto, api } from "../api";
 import { fmtTime, fmtTokens } from "./SessionList";
 import { CloseIcon, ExternalIcon, PlayIcon, StarIcon } from "./icons";
@@ -133,6 +134,34 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
     }
   };
 
+  const exportAs = (format: "md" | "jsonl") => {
+    setBusy(true);
+    (async () => {
+      // 先弹系统保存对话框，用户取消则什么也不做
+      const dest = await saveDialog({
+        defaultPath: `${session.harness_id}-${session.session_id.slice(0, 8)}.${format}`,
+        filters: [{ name: format.toUpperCase(), extensions: [format] }],
+      });
+      if (!dest) return;
+      const r = await api.exportSession(session.harness_id, session.session_id, format, dest);
+      toast("ok", `已导出到：${r}`);
+    })()
+      .catch((e) => toast("err", String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const backupTo = () => {
+    setBusy(true);
+    (async () => {
+      const dir = await openDialog({ directory: true, title: "选择备份目录" });
+      if (!dir || Array.isArray(dir)) return;
+      const r = await api.backup(session.harness_id, session.session_id, dir);
+      toast("ok", `已备份到：${r}`);
+    })()
+      .catch((e) => toast("err", String(e)))
+      .finally(() => setBusy(false));
+  };
+
   const onDelete = async () => {
     if (!window.confirm(`把该会话的原始文件移入回收站？\n${session.raw_path}\n（标签和备注会保留）`)) return;
     setBusy(true);
@@ -251,14 +280,14 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
             className={btn}
             disabled={busy || !caps?.can_backup || !rawOk}
             title={!rawOk ? "独立存储目录缺失，无法备份" : "复制原始文件到 ~/SessionHub/backups"}
-            onClick={() => run(() => api.backup(session.harness_id, session.session_id), "已备份到")}
+            onClick={backupTo}
           >
             备份
           </button>
-          <button className={btn} disabled={busy} onClick={() => run(() => api.exportSession(session.harness_id, session.session_id, "md"), "已导出 Markdown 到")}>
+          <button className={btn} disabled={busy} title="选择保存位置，导出 Markdown" onClick={() => exportAs("md")}>
             导出 MD
           </button>
-          <button className={btn} disabled={busy} onClick={() => run(() => api.exportSession(session.harness_id, session.session_id, "jsonl"), "已导出 JSONL 到")}>
+          <button className={btn} disabled={busy} title="选择保存位置，导出 JSONL" onClick={() => exportAs("jsonl")}>
             导出 JSONL
           </button>
           {caps?.can_read_messages && (

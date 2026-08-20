@@ -131,10 +131,10 @@ export const api = {
     invoke<string>("launch_harness", { harnessId, sessionId }),
   deleteSession: (harnessId: string, sessionId: string) =>
     invoke<string>("delete_session", { harnessId, sessionId }),
-  backup: (harnessId: string, sessionId: string) =>
-    invoke<string>("backup_session", { harnessId, sessionId }),
-  exportSession: (harnessId: string, sessionId: string, format: "md" | "jsonl") =>
-    invoke<string>("export_session", { harnessId, sessionId, format }),
+  backup: (harnessId: string, sessionId: string, destDir?: string) =>
+    invoke<string>("backup_session", { harnessId, sessionId, destDir: destDir ?? null }),
+  exportSession: (harnessId: string, sessionId: string, format: "md" | "jsonl", destPath?: string) =>
+    invoke<string>("export_session", { harnessId, sessionId, format, destPath: destPath ?? null }),
   migrate: (harnessId: string, sessionId: string, target: string) =>
     invoke<MigrationResult>("migrate_session", { harnessId, sessionId, target }),
   reveal: (harnessId: string, sessionId: string) =>
