@@ -39,8 +39,12 @@ pub trait HarnessAdapter: Send + Sync {
     fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> (Vec<RawRef>, usize);
     /// 归一化（容错：解析失败返回 None，不 panic）
     fn parse(&self, raw: &RawRef) -> Option<Session>;
-    /// 续接命令；None 表示不支持
+    /// 续接命令（打开该对话）；None 表示不支持
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec>;
+    /// 打开 harness 本身（不定位到具体会话）；None 表示不支持
+    fn launch_spec(&self, _s: &Session) -> Option<ResumeSpec> {
+        None
+    }
     fn capabilities(&self) -> Capabilities;
     /// raw_path 是否指向该会话的独立存储（删除/备份/定位前必须检查）。
     /// 为 false 说明 raw_path 回退到了共享/全局文件，操作会误伤其它会话。

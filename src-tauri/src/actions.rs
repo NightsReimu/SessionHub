@@ -229,8 +229,8 @@ pub fn export_session(session: &Session, messages: &[crate::models::MessagePrevi
             } else {
                 for m in messages {
                     let role = match m.role.as_str() {
-                        "user" => "🧑 User",
-                        "assistant" => "🤖 Assistant",
+                        "user" => "User",
+                        "assistant" => "Assistant",
                         r => r,
                     };
                     md.push_str(&format!("## {}\n\n{}\n\n", role, m.text));

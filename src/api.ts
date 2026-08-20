@@ -5,6 +5,7 @@ export interface Capabilities {
   can_delete: boolean;
   can_backup: boolean;
   can_read_messages: boolean;
+  can_launch: boolean;
 }
 
 export interface AdapterInfo {
@@ -108,6 +109,8 @@ export const api = {
     invoke<MessagePreview[]>("get_session_messages", { harnessId, sessionId, limit }),
   resume: (harnessId: string, sessionId: string) =>
     invoke<string>("resume_session", { harnessId, sessionId }),
+  launchHarness: (harnessId: string, sessionId: string) =>
+    invoke<string>("launch_harness", { harnessId, sessionId }),
   deleteSession: (harnessId: string, sessionId: string) =>
     invoke<string>("delete_session", { harnessId, sessionId }),
   backup: (harnessId: string, sessionId: string) =>

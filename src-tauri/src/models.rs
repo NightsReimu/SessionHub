@@ -46,6 +46,7 @@ pub struct Capabilities {
     pub can_delete: bool,
     pub can_backup: bool,
     pub can_read_messages: bool,
+    pub can_launch: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

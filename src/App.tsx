@@ -195,6 +195,7 @@ export default function App() {
               adapters={adapters}
               onPatch={patchSelected}
               onRemoved={removeFromList}
+              onClose={() => setSelected(null)}
               toast={toast}
             />
           )}

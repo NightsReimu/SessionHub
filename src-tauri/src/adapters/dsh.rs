@@ -175,12 +175,20 @@ impl HarnessAdapter for DshAdapter {
         })
     }
 
+    fn launch_spec(&self, s: &Session) -> Option<ResumeSpec> {
+        Some(ResumeSpec {
+            command: "dsh".to_string(),
+            cwd: non_empty(&s.project_path),
+        })
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             can_resume: true,
             can_delete: true,
             can_backup: true,
             can_read_messages: true,
+            can_launch: true,
         }
     }
 

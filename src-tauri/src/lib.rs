@@ -144,6 +144,25 @@ fn resume_session(
 }
 
 #[tauri::command]
+fn launch_harness(
+    state: tauri::State<AppState>,
+    harness_id: String,
+    session_id: String,
+) -> Result<String, String> {
+    let dto = state
+        .db
+        .get_session(&harness_id, &session_id)
+        .ok_or_else(|| "会话不在索引中，请先扫描".to_string())?;
+    let adapter = state
+        .adapter(&harness_id)
+        .ok_or_else(|| format!("未知 harness：{harness_id}"))?;
+    let spec = adapter
+        .launch_spec(&dto.session)
+        .ok_or_else(|| "该 harness 不支持直接打开".to_string())?;
+    actions::launch_in_terminal(&spec.command, spec.cwd.as_deref())
+}
+
+#[tauri::command]
 fn delete_session(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -290,6 +309,7 @@ pub fn run() {
             search_sessions,
             get_session_messages,
             resume_session,
+            launch_harness,
             delete_session,
             backup_session,
             export_session,
