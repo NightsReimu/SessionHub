@@ -22,6 +22,50 @@ fn ts_suffix() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
+/// 已安装的 GUI 应用才打开；未安装返回 Err（调用方回退到终端方案）
+pub fn open_gui_app_if_installed(name: &str) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            PathBuf::from(format!("/Applications/{name}.app")),
+            dirs::home_dir()
+                .map(|h| h.join(format!("Applications/{name}.app")))
+                .unwrap_or_default(),
+        ];
+        if candidates.iter().any(|p| p.exists()) {
+            Command::new("open")
+                .args(["-a", name])
+                .spawn()
+                .map_err(|e| format!("打开 {name} 失败：{e}"))?;
+            return Ok(format!("open -a {name}"));
+        }
+        return Err(format!("{name} 未安装"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let candidates = [
+            PathBuf::from(&local).join(format!("Programs/{name}")),
+            PathBuf::from(format!("C:/Program Files/{name}")),
+        ];
+        if candidates.iter().any(|p| p.exists()) {
+            Command::new("cmd")
+                .args(["/c", "start", "", name])
+                .spawn()
+                .map_err(|e| format!("打开 {name} 失败：{e}"))?;
+            return Ok(format!("start {name}"));
+        }
+        return Err(format!("{name} 未安装"));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if Command::new("gtk-launch").arg(name).spawn().is_ok() {
+            return Ok(name.to_string());
+        }
+        Err(format!("{name} 未安装"))
+    }
+}
+
 /// 跨平台拉起终端执行续接命令：macOS 用 Terminal.app，Windows 优先 wt，Linux 试常见终端。
 pub fn launch_in_terminal(command: &str, cwd: Option<&str>) -> Result<String, String> {
     #[cfg(target_os = "macos")]

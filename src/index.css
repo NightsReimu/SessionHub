@@ -39,3 +39,7 @@ body {
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+
+::selection {
+  background: rgba(99, 102, 241, 0.35);
+}

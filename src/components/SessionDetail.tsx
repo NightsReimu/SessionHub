@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AdapterInfo, MessagePreview, SessionDto, api } from "../api";
 import { fmtTime, fmtTokens } from "./SessionList";
 import { CloseIcon, ExternalIcon, PlayIcon, StarIcon } from "./icons";
+import MessageText from "./MessageText";
 import { Toast } from "../App";
 
 interface Props {
@@ -24,6 +25,8 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
   const [msgError, setMsgError] = useState<string | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const noteTimer = useRef<number | null>(null);
   const metaRef = useRef(session.meta);
   const savedMetaRef = useRef(session.meta);
@@ -41,6 +44,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
     setTagInput("");
     setMessages(null);
     setMsgError(null);
+    setEditingTitle(false);
     const harnessId = session.harness_id;
     const sessionId = session.session_id;
     return () => {
@@ -135,11 +139,26 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
   };
 
   const totalTokens = (session.tokens_in ?? 0) + (session.tokens_out ?? 0);
+  const displayTitle = session.meta.custom_title?.trim() || session.title || "(无标题)";
+
+  const commitTitle = () => {
+    const v = titleDraft.trim();
+    setEditingTitle(false);
+    if (v && v !== displayTitle) {
+      saveMeta({ custom_title: v });
+    }
+  };
+
+  const chip = (text: string) => (
+    <span key={text} className="px-2 py-1 rounded-md bg-zinc-900/80 border border-zinc-800/60 text-zinc-400">
+      {text}
+    </span>
+  );
 
   return (
-    <div className="w-[520px] shrink-0 border-l border-zinc-800/80 flex flex-col bg-zinc-950">
+    <div className="w-[520px] shrink-0 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 flex flex-col overflow-hidden">
       {/* 头部：标题 + 操作 + 概要 */}
-      <div className="px-5 pt-4 pb-3 border-b border-zinc-800/80 space-y-3">
+      <div className="px-5 pt-4 pb-3.5 border-b border-zinc-800/60 space-y-3">
         <div className="flex items-start gap-2">
           <button
             onClick={() => saveMeta({ favorite: !session.meta.favorite })}
@@ -149,10 +168,50 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
             <StarIcon filled={session.meta.favorite} className="w-5 h-5" />
           </button>
           <div className="flex-1 min-w-0">
-            <h2 className="text-[15px] font-medium text-zinc-100 leading-snug break-words">
-              {session.title || "(无标题)"}
-            </h2>
-            <div className="text-[11px] text-zinc-600 mono mt-1 truncate">{session.session_id}</div>
+            {editingTitle ? (
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitTitle();
+                  if (e.key === "Escape") setEditingTitle(false);
+                }}
+                onBlur={commitTitle}
+                placeholder="输入自定义标题，留空恢复默认"
+                className="w-full bg-zinc-900/90 border border-indigo-500/50 rounded-lg px-2.5 py-1.5 text-[15px] font-medium text-zinc-100 outline-none"
+              />
+            ) : (
+              <div className="group/title flex items-start gap-1.5">
+                <h2 className="text-[15px] font-medium text-zinc-100 leading-snug break-words flex-1">
+                  {displayTitle}
+                </h2>
+                <button
+                  onClick={() => {
+                    setTitleDraft(session.meta.custom_title?.trim() || session.title);
+                    setEditingTitle(true);
+                  }}
+                  className="shrink-0 mt-1 p-0.5 text-zinc-600 opacity-0 group-hover/title:opacity-100 hover:text-zinc-300 transition-opacity"
+                  title="编辑标题"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.86 3.49a2.12 2.12 0 013 3L8.5 17.86 4 19l1.14-4.5L16.86 3.49z" />
+                  </svg>
+                </button>
+              </div>
+            )}
+            <div className="flex items-center gap-2 mt-1">
+              <div className="text-[11px] text-zinc-600 mono truncate">{session.session_id}</div>
+              {session.meta.custom_title && !editingTitle && (
+                <button
+                  onClick={() => saveMeta({ custom_title: null })}
+                  className="shrink-0 text-[10px] text-zinc-500 hover:text-zinc-300 underline underline-offset-2"
+                  title="恢复 harness 原标题"
+                >
+                  重置标题
+                </button>
+              )}
+            </div>
           </div>
           <button onClick={onClose} className="shrink-0 p-1 text-zinc-500 hover:text-zinc-200" title="关闭">
             <CloseIcon className="w-4 h-4" />
@@ -208,12 +267,12 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
-          <span>开始 {session.started_at ? new Date(session.started_at).toLocaleString("zh-CN", { hour12: false }) : "—"}</span>
-          <span>活动 {fmtTime(session.ended_at)}</span>
-          <span>{session.message_count != null ? `${session.message_count} 条` : "—"}</span>
-          {totalTokens > 0 && <span>{fmtTokens(totalTokens)} tok</span>}
-          {session.cost_usd != null && session.cost_usd > 0 && <span>${session.cost_usd.toFixed(3)}</span>}
+        <div className="flex flex-wrap gap-1.5 text-[11px]">
+          {chip(`开始 ${session.started_at ? new Date(session.started_at).toLocaleString("zh-CN", { hour12: false }) : "—"}`)}
+          {chip(`活动 ${fmtTime(session.ended_at)}`)}
+          {chip(session.message_count != null ? `${session.message_count} 条` : "— 条")}
+          {totalTokens > 0 && chip(`${fmtTokens(totalTokens)} tok`)}
+          {session.cost_usd != null && session.cost_usd > 0 && chip(`$${session.cost_usd.toFixed(3)}`)}
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -281,7 +340,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                     )}
                   </div>
                   <div className="text-[13px] leading-relaxed text-zinc-200 whitespace-pre-wrap break-words select-text">
-                    {m.text}
+                    <MessageText text={m.text} />
                   </div>
                 </div>
               );
@@ -295,7 +354,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
       </div>
 
       {/* 底部：详情与备注（折叠） */}
-      <div className="border-t border-zinc-800/80">
+      <div className="border-t border-zinc-800/60">
         <button
           className="w-full px-5 py-2.5 text-[11px] text-zinc-500 hover:text-zinc-300 flex items-center justify-between"
           onClick={() => setShowInfo(!showInfo)}

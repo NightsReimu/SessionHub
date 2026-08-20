@@ -227,6 +227,10 @@ impl HarnessAdapter for CodexAdapter {
         })
     }
 
+    fn gui_apps(&self) -> &'static [&'static str] {
+        &["Codex"]
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             can_resume: true,

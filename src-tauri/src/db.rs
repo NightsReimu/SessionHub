@@ -51,6 +51,15 @@ impl Db {
                 PRIMARY KEY(harness_id, session_id)
             );",
         )?;
+        // 迁移：旧库补 custom_title 列
+        let has_custom_title = conn
+            .prepare("PRAGMA table_info(session_meta)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .flatten()
+            .any(|c| c == "custom_title");
+        if !has_custom_title {
+            conn.execute_batch("ALTER TABLE session_meta ADD COLUMN custom_title TEXT")?;
+        }
         // FTS5 不可用时降级为 LIKE 搜索
         let fts_ok = conn
             .execute_batch(
@@ -89,20 +98,22 @@ impl Db {
 
     fn get_meta_conn(conn: &Connection, harness: &str, id: &str) -> SessionMeta {
         conn.query_row(
-            "SELECT tags, note, favorite FROM session_meta WHERE harness_id=?1 AND session_id=?2",
+            "SELECT tags, note, favorite, custom_title FROM session_meta WHERE harness_id=?1 AND session_id=?2",
             params![harness, id],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
                 ))
             },
         )
-        .map(|(tags, note, fav)| SessionMeta {
+        .map(|(tags, note, fav, custom_title)| SessionMeta {
             tags: serde_json::from_str(&tags).unwrap_or_default(),
             note,
             favorite: fav != 0,
+            custom_title,
         })
         .unwrap_or_default()
     }
@@ -114,7 +125,9 @@ impl Db {
         let _ = conn.execute("DELETE FROM sessions_fts WHERE rowid=?1", params![rowid]);
         let _ = conn.execute(
             "INSERT INTO sessions_fts(rowid, title, project_path, tags, note)
-             SELECT s.rowid, s.title, s.project_path, COALESCE(m.tags,''), COALESCE(m.note,'')
+             SELECT s.rowid,
+                    s.title || ' ' || COALESCE(m.custom_title, ''),
+                    s.project_path, COALESCE(m.tags,''), COALESCE(m.note,'')
              FROM sessions s LEFT JOIN session_meta m
                ON m.harness_id=s.harness_id AND m.session_id=s.session_id
              WHERE s.rowid=?1",
@@ -272,16 +285,18 @@ impl Db {
     pub fn set_meta(&self, harness: &str, id: &str, meta: &SessionMeta) -> DbResult<()> {
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO session_meta(harness_id, session_id, tags, note, favorite)
-             VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO session_meta(harness_id, session_id, tags, note, favorite, custom_title)
+             VALUES (?1,?2,?3,?4,?5,?6)
              ON CONFLICT(harness_id, session_id) DO UPDATE SET
-                tags=excluded.tags, note=excluded.note, favorite=excluded.favorite",
+                tags=excluded.tags, note=excluded.note, favorite=excluded.favorite,
+                custom_title=excluded.custom_title",
             params![
                 harness,
                 id,
                 serde_json::to_string(&meta.tags).unwrap_or_else(|_| "[]".to_string()),
                 meta.note,
                 if meta.favorite { 1 } else { 0 },
+                meta.custom_title.as_deref().filter(|t| !t.trim().is_empty()),
             ],
         )?;
         if let Ok(rowid) = conn.query_row::<i64, _, _>(
@@ -480,6 +495,7 @@ mod tests {
                 tags: vec![],
                 note: String::new(),
                 favorite: true,
+                custom_title: None,
             },
         )
         .unwrap();
@@ -488,6 +504,41 @@ mod tests {
         db.delete_session_row("h", "s1").unwrap();
         assert_eq!(db.counts().unwrap().favorites, 0, "删除会话后孤立 meta 不应计入收藏");
         assert!(db.list_sessions(None, true, 10, 0).unwrap().is_empty());
+        cleanup(&path);
+    }
+
+    /// 自定义标题：写入/读取/清空往返
+    #[test]
+    fn custom_title_roundtrip() {
+        let (db, path) = temp_db("title");
+        db.upsert_session(&stub_session("h", "s1")).unwrap();
+        assert_eq!(db.get_session("h", "s1").unwrap().meta.custom_title, None);
+
+        db.set_meta(
+            "h",
+            "s1",
+            &SessionMeta {
+                custom_title: Some("我的标题".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            db.get_session("h", "s1").unwrap().meta.custom_title.as_deref(),
+            Some("我的标题")
+        );
+
+        // 空白标题视为清除
+        db.set_meta(
+            "h",
+            "s1",
+            &SessionMeta {
+                custom_title: Some("   ".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(db.get_session("h", "s1").unwrap().meta.custom_title, None);
         cleanup(&path);
     }
 

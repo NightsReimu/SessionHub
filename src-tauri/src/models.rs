@@ -28,6 +28,9 @@ pub struct SessionMeta {
     pub tags: Vec<String>,
     pub note: String,
     pub favorite: bool,
+    /// 用户自定义标题；None 时显示 harness 解析出的原标题
+    #[serde(default)]
+    pub custom_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

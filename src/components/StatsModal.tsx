@@ -81,7 +81,9 @@ export default function StatsModal({ stats, onClose, onSelect }: Props) {
                 <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${harnessBadge(s.harness_id)}`}>
                   {s.harness_id}
                 </span>
-                <span className="truncate text-sm text-zinc-200 flex-1">{s.title || "(无标题)"}</span>
+                <span className="truncate text-sm text-zinc-200 flex-1">
+                  {s.meta.custom_title?.trim() || s.title || "(无标题)"}
+                </span>
                 <span className="shrink-0 text-xs text-zinc-500">
                   {fmtTokens((s.tokens_in ?? 0) + (s.tokens_out ?? 0))} tok
                 </span>

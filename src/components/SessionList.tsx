@@ -44,7 +44,7 @@ export default function SessionList({ sessions, selected, onSelect }: Props) {
   const v = useVirtualizer({
     count: sessions.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 62,
+    estimateSize: () => 68,
     overscan: 12,
   });
 
@@ -58,50 +58,56 @@ export default function SessionList({ sessions, selected, onSelect }: Props) {
   }
 
   return (
-    <div ref={parentRef} className="flex-1 overflow-y-auto min-w-0">
+    <div ref={parentRef} className="flex-1 overflow-y-auto min-w-0 py-1.5">
       <div style={{ height: v.getTotalSize(), position: "relative" }}>
         {v.getVirtualItems().map((row) => {
           const s = sessions[row.index];
           const active =
             selected?.harness_id === s.harness_id && selected?.session_id === s.session_id;
           const tokens = (s.tokens_in ?? 0) + (s.tokens_out ?? 0);
+          const title = s.meta.custom_title?.trim() || s.title || "(无标题)";
           return (
             <div
               key={s.harness_id + "/" + s.session_id}
-              onClick={() => onSelect(s)}
               style={{ transform: `translateY(${row.start}px)` }}
-              className={`absolute top-0 left-0 w-full h-[62px] px-4 py-2 cursor-pointer flex flex-col justify-center border-b border-zinc-900/80 border-l-2 transition-colors ${
-                active
-                  ? "bg-zinc-800/60 border-l-indigo-500"
-                  : "border-l-transparent hover:bg-zinc-900/70"
-              }`}
+              className="absolute top-0 left-0 w-full h-[68px] px-2 py-1"
             >
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${harnessBadge(s.harness_id)}`}
-                >
-                  {s.harness_id}
-                </span>
-                {s.meta.favorite && <StarIcon filled className="w-3 h-3 shrink-0" />}
-                <span className="truncate text-sm text-zinc-100 flex-1">
-                  {s.title || "(无标题)"}
-                </span>
-                <span className="shrink-0 text-xs text-zinc-500" title={s.ended_at ? new Date(s.ended_at).toLocaleString("zh-CN", { hour12: false }) : ""}>
-                  {fmtTime(s.ended_at ?? s.started_at)}
-                </span>
-              </div>
-              <div className="flex items-center gap-3 mt-1 text-[11px] text-zinc-500 min-w-0">
-                <span className="truncate mono">{shortPath(s.project_path)}</span>
-                <span className="shrink-0">{s.message_count != null ? `${s.message_count} 条` : "—"}</span>
-                <span className="shrink-0">{tokens > 0 ? `${fmtTokens(tokens)} tok` : ""}</span>
-                {s.cost_usd != null && s.cost_usd > 0 && (
-                  <span className="shrink-0">${s.cost_usd.toFixed(3)}</span>
-                )}
-                {s.meta.tags.slice(0, 3).map((t) => (
-                  <span key={t} className="shrink-0 px-1 rounded bg-zinc-800/80 text-zinc-500">
-                    {t}
+              <div
+                onClick={() => onSelect(s)}
+                className={`h-full rounded-xl border px-3 py-2 cursor-pointer flex flex-col justify-center transition-colors ${
+                  active
+                    ? "bg-indigo-500/10 border-indigo-500/30"
+                    : "border-transparent hover:bg-zinc-800/50"
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border ${harnessBadge(s.harness_id)}`}
+                  >
+                    {s.harness_id}
                   </span>
-                ))}
+                  {s.meta.favorite && <StarIcon filled className="w-3 h-3 shrink-0" />}
+                  <span className="truncate text-[13px] text-zinc-100 flex-1">{title}</span>
+                  <span
+                    className="shrink-0 text-[11px] text-zinc-500"
+                    title={s.ended_at ? new Date(s.ended_at).toLocaleString("zh-CN", { hour12: false }) : ""}
+                  >
+                    {fmtTime(s.ended_at ?? s.started_at)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 mt-1.5 text-[11px] text-zinc-500 min-w-0">
+                  <span className="truncate mono">{shortPath(s.project_path)}</span>
+                  <span className="shrink-0">{s.message_count != null ? `${s.message_count} 条` : "—"}</span>
+                  <span className="shrink-0">{tokens > 0 ? `${fmtTokens(tokens)} tok` : ""}</span>
+                  {s.cost_usd != null && s.cost_usd > 0 && (
+                    <span className="shrink-0">${s.cost_usd.toFixed(3)}</span>
+                  )}
+                  {s.meta.tags.slice(0, 3).map((t) => (
+                    <span key={t} className="shrink-0 px-1.5 py-px rounded-md bg-zinc-800/80 text-zinc-500">
+                      {t}
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
           );

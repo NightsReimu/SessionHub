@@ -147,7 +147,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full gap-2.5 p-2.5 bg-zinc-950">
       <Sidebar
         adapters={adapters}
         counts={counts}
@@ -162,18 +162,21 @@ export default function App() {
         onOpenStats={openStats}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800">
+      <div className="flex-1 flex flex-col gap-2.5 min-w-0">
+        <div className="flex items-center gap-2.5 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 px-3.5 py-2.5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 text-zinc-500 shrink-0">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m1.6-4.4a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
           <input
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             placeholder="搜索标题 / 项目路径 / 标签 / 备注…"
-            className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-zinc-600"
           />
           <button
             onClick={() => runScan(false)}
             disabled={scanning}
-            className="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50"
+            className="px-3.5 py-1.5 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
           >
             {scanning ? "扫描中…" : "扫描"}
           </button>
@@ -181,15 +184,17 @@ export default function App() {
             onClick={() => runScan(true)}
             disabled={scanning}
             title="重新解析所有会话文件"
-            className="px-3 py-1.5 text-sm rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50"
+            className="px-3.5 py-1.5 text-xs rounded-xl bg-zinc-800/70 hover:bg-zinc-700/70 text-zinc-300 transition-colors disabled:opacity-50"
           >
             全量重扫
           </button>
         </div>
 
-        <div className="flex-1 flex min-h-0">
-          <SessionList sessions={sessions} selected={selected} onSelect={setSelected} />
-          {selected && (
+        <div className="flex-1 flex gap-2.5 min-h-0">
+          <div className="flex-1 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 overflow-hidden flex min-w-0">
+            <SessionList sessions={sessions} selected={selected} onSelect={setSelected} />
+          </div>
+          {selected ? (
             <SessionDetail
               session={selected}
               adapters={adapters}
@@ -198,6 +203,13 @@ export default function App() {
               onClose={() => setSelected(null)}
               toast={toast}
             />
+          ) : (
+            <div className="w-[520px] shrink-0 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 flex flex-col items-center justify-center gap-3 text-zinc-600">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="w-10 h-10 text-zinc-700">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h8m-8 4h5M21 12a9 9 0 01-13.2 7.9L3 21l1.1-4.8A9 9 0 1121 12z" />
+              </svg>
+              <div className="text-sm">选择左侧会话查看对话记录</div>
+            </div>
           )}
         </div>
       </div>
@@ -217,12 +229,12 @@ export default function App() {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`px-3 py-2 rounded-lg text-sm shadow-lg border break-all ${
+            className={`px-3.5 py-2.5 rounded-xl text-sm shadow-xl border break-all ${
               t.kind === "ok"
-                ? "bg-emerald-950 border-emerald-700 text-emerald-200"
+                ? "bg-emerald-950/95 border-emerald-700/60 text-emerald-200"
                 : t.kind === "err"
-                  ? "bg-red-950 border-red-700 text-red-200"
-                  : "bg-zinc-900 border-zinc-700 text-zinc-200"
+                  ? "bg-red-950/95 border-red-700/60 text-red-200"
+                  : "bg-zinc-900/95 border-zinc-700/60 text-zinc-200"
             }`}
           >
             {t.text}

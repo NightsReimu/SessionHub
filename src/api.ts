@@ -38,6 +38,7 @@ export interface SessionMeta {
   tags: string[];
   note: string;
   favorite: boolean;
+  custom_title?: string | null;
 }
 
 export interface SessionDto extends Session {
