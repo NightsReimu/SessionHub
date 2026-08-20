@@ -58,7 +58,9 @@ pub fn start(
             Ok(_) => {
                 // 去抖：排空积压事件
                 while rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
-                let report = scan_all(&db, &adapters, &DetectCtx::new(), false);
+                let report = scan_all(&db, &adapters, &DetectCtx::new(), false, Some(&|p| {
+                    let _ = app.emit("scan-progress", p);
+                }));
                 let _ = app.emit("scan-update", report);
             }
             Err(RecvTimeoutError::Timeout) => continue,

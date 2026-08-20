@@ -77,6 +77,17 @@ export interface ScanReport {
   duration_ms: number;
 }
 
+export interface ScanProgress {
+  adapter_id: string;
+  adapter_index: number;
+  adapter_count: number;
+  done: number;
+  total: number;
+  parsed: number;
+  skipped: number;
+  errors: number;
+}
+
 export interface MessagePreview {
   role: string;
   text: string;

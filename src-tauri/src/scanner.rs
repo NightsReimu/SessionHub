@@ -2,18 +2,22 @@ use std::time::Instant;
 
 use crate::adapters::{DetectCtx, HarnessAdapter};
 use crate::db::Db;
-use crate::models::{AdapterScanStat, ScanReport};
+use crate::models::{AdapterScanStat, ScanProgress, ScanReport};
 
 /// 扫描所有 adapter：enumerate → 增量跳过 → parse → upsert。
 /// full=true 时强制重解析，并清理索引里已不存在的会话。
+/// progress 为可选的进度回调（每 adapter 先枚举得到总数，之后每 25 条上报一次）。
 pub fn scan_all(
     db: &Db,
     adapters: &[Box<dyn HarnessAdapter>],
     ctx: &DetectCtx,
     full: bool,
+    progress: Option<&dyn Fn(ScanProgress)>,
 ) -> ScanReport {
     let start = Instant::now();
     let mut stats = Vec::new();
+    let adapter_count = adapters.iter().filter(|a| a.detect(ctx)).count();
+    let mut adapter_index = 0usize;
 
     for adapter in adapters {
         let detected = adapter.detect(ctx);
@@ -29,6 +33,8 @@ pub fn scan_all(
             stats.push(stat);
             continue;
         }
+        let this_index = adapter_index;
+        adapter_index += 1;
         let roots = adapter.roots(ctx);
         if roots.is_empty() {
             // detected 但当前没有任何可扫描根：无法区分“全被删了”和“暂时不可用”，
@@ -37,38 +43,68 @@ pub fn scan_all(
             stats.push(stat);
             continue;
         }
-        let mut seen_ids: Vec<String> = Vec::new();
+        if let Some(p) = progress {
+            p(ScanProgress {
+                adapter_id: adapter.id().to_string(),
+                adapter_index: this_index,
+                adapter_count,
+                done: 0,
+                total: 0,
+                parsed: 0,
+                skipped: 0,
+                errors: 0,
+            });
+        }
+        // 先枚举所有根，拿到总数后才能显示 x/y 进度
+        let mut all_raws = Vec::new();
         for root in roots {
             let (raws, enum_errors) = adapter.enumerate(&root, ctx);
             stat.errors += enum_errors;
-            for raw in raws {
-                stat.scanned += 1;
-                // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
-                if !full {
-                    if let Some(id) = raw.identity.as_deref() {
-                        if db.stamp(adapter.id(), id) == Some((raw.size, raw.mtime_ms)) {
-                            stat.skipped += 1;
-                            continue;
-                        }
+            all_raws.extend(raws);
+        }
+        let total = all_raws.len();
+        let mut seen_ids: Vec<String> = Vec::new();
+        for (i, raw) in all_raws.into_iter().enumerate() {
+            stat.scanned += 1;
+            // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
+            if !full {
+                if let Some(id) = raw.identity.as_deref() {
+                    if db.stamp(adapter.id(), id) == Some((raw.size, raw.mtime_ms)) {
+                        stat.skipped += 1;
+                        continue;
                     }
                 }
-                let Ok(parsed_probe) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    adapter.parse(&raw)
-                })) else {
+            }
+            let Ok(parsed_probe) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                adapter.parse(&raw)
+            })) else {
+                stat.errors += 1;
+                continue;
+            };
+            let Some(session) = parsed_probe else {
+                stat.errors += 1;
+                continue;
+            };
+            seen_ids.push(session.session_id.clone());
+            match db.upsert_session(&session) {
+                Ok(_) => stat.parsed += 1,
+                Err(e) => {
+                    eprintln!("[scan] upsert failed {}: {e}", session.session_id);
                     stat.errors += 1;
-                    continue;
-                };
-                let Some(session) = parsed_probe else {
-                    stat.errors += 1;
-                    continue;
-                };
-                seen_ids.push(session.session_id.clone());
-                match db.upsert_session(&session) {
-                    Ok(_) => stat.parsed += 1,
-                    Err(e) => {
-                        eprintln!("[scan] upsert failed {}: {e}", session.session_id);
-                        stat.errors += 1;
-                    }
+                }
+            }
+            if let Some(p) = progress {
+                if (i + 1) % 25 == 0 || i + 1 == total {
+                    p(ScanProgress {
+                        adapter_id: adapter.id().to_string(),
+                        adapter_index: this_index,
+                        adapter_count,
+                        done: i + 1,
+                        total,
+                        parsed: stat.parsed,
+                        skipped: stat.skipped,
+                        errors: stat.errors,
+                    });
                 }
             }
         }
@@ -206,32 +242,32 @@ mod tests {
 
         // 初始：a、b 入库
         mock_set(&shared, &["a", "b"], 0, &[]);
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 2);
 
         // b 的源文件真被删了 → prune 掉 b
         mock_set(&shared, &["a"], 0, &[]);
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 1);
         assert!(db.get_session("mock", "b").is_none());
 
         // 目录遍历失败 → 即使扫到 a，也绝不动索引
         mock_set(&shared, &["a"], 1, &[]);
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 1);
 
         // b 回来了但解析失败（文件写入中/损坏）→ 旧索引必须保留
         mock_set(&shared, &["a", "b"], 0, &[]);
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 2);
         mock_set(&shared, &["a", "b"], 0, &["b"]);
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 2, "解析失败时不得 prune");
         assert!(db.get_session("mock", "b").is_some());
 
         // 目录可读但确实空了 → 正常清理
         mock_set(&shared, &[], 0, &[]);
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 0, "源文件全删后应清理索引");
 
         cleanup_db(&path);
@@ -247,24 +283,24 @@ mod tests {
         let ctx = DetectCtx::new();
 
         mock_set(&shared, &["a", "b"], 0, &[]);
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 2);
 
         // 主根消失（enumerable 只剩 b）：不得 prune a
         mock_set(&shared, &["b"], 0, &[]);
         *shared.required_missing.lock().unwrap() = 1;
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 2, "必需根缺失时不得 prune");
         assert!(db.get_session("mock", "a").is_some());
 
         // 主根恢复 → prune 恢复工作
         *shared.required_missing.lock().unwrap() = 0;
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 1);
 
         // detected 但没有任何可扫描根 → 同样按错误处理
         *shared.roots_empty.lock().unwrap() = true;
-        scan_all(&db, &adapters, &ctx, true);
+        scan_all(&db, &adapters, &ctx, true, None);
         assert_eq!(db.counts().unwrap().total, 1, "无根可扫时不得 prune");
 
         cleanup_db(&path);
@@ -280,7 +316,7 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
         let db = Db::open(&tmp).unwrap();
         let adapters = all_adapters();
-        let report = scan_all(&db, &adapters, &DetectCtx::new(), false);
+        let report = scan_all(&db, &adapters, &DetectCtx::new(), false, None);
         eprintln!(
             "{}",
             serde_json::to_string_pretty(&report).unwrap_or_default()

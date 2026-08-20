@@ -7,6 +7,8 @@ mod watcher;
 
 use std::sync::{Arc, Mutex};
 
+use tauri::Emitter;
+
 use adapters::{all_adapters, DetectCtx, HarnessAdapter};
 use db::Db;
 use models::*;
@@ -75,8 +77,11 @@ fn list_adapters(state: tauri::State<AppState>) -> Vec<AdapterInfo> {
 }
 
 #[tauri::command]
-fn scan_sessions(state: tauri::State<AppState>, full: bool) -> ScanReport {
-    scanner::scan_all(&state.db, &state.adapters, &DetectCtx::new(), full)
+fn scan_sessions(app: tauri::AppHandle, state: tauri::State<AppState>, full: bool) -> ScanReport {
+    let emit = |p: ScanProgress| {
+        let _ = app.emit("scan-progress", p);
+    };
+    scanner::scan_all(&state.db, &state.adapters, &DetectCtx::new(), full, Some(&emit))
 }
 
 #[tauri::command]

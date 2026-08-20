@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, AdapterInfo, Counts, HubPaths, SessionDto, StatsOverview } from "./api";
+import { api, AdapterInfo, Counts, HubPaths, ScanProgress, SessionDto, StatsOverview } from "./api";
 import Sidebar from "./components/Sidebar";
 import SessionList from "./components/SessionList";
 import SessionDetail from "./components/SessionDetail";
@@ -27,6 +27,7 @@ export default function App() {
   const [hub, setHub] = useState<HubPaths | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [stats, setStats] = useState<StatsOverview | null>(null);
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
   // 请求序号：只应用最后一次请求的结果，防止乱序响应覆盖新结果
   const reqSeq = useRef(0);
 
@@ -62,6 +63,7 @@ export default function App() {
   const runScan = useCallback(
     async (full: boolean) => {
       setScanning(true);
+      setProgress(null);
       try {
         const report = await api.scan(full);
         toast("ok", `扫描完成：${report.total_sessions} 个会话，耗时 ${(report.duration_ms / 1000).toFixed(1)}s`);
@@ -72,6 +74,7 @@ export default function App() {
         toast("err", `扫描失败：${String(e)}`);
       } finally {
         setScanning(false);
+        setProgress(null);
       }
     },
     [toast, refreshCounts, refreshList]
@@ -105,11 +108,16 @@ export default function App() {
 
   useEffect(() => {
     const un = listen("scan-update", () => {
+      setProgress(null);
       refreshCounts();
       refreshList();
     });
+    const un2 = listen<ScanProgress>("scan-progress", (e) => {
+      setProgress(e.payload);
+    });
     return () => {
       un.then((f) => f());
+      un2.then((f) => f());
     };
   }, [refreshCounts, refreshList]);
 
@@ -189,6 +197,43 @@ export default function App() {
             全量重扫
           </button>
         </div>
+
+        {progress && (
+          <div className="rounded-2xl border border-zinc-800/60 bg-zinc-900/40 px-4 py-2.5">
+            <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1.5">
+              <span>
+                正在扫描 <span className="text-zinc-200">{progress.adapter_id}</span>
+                <span className="text-zinc-600">
+                  （{progress.adapter_index + 1}/{progress.adapter_count}）
+                </span>
+              </span>
+              <span className="text-zinc-500">
+                {progress.total > 0
+                  ? `${progress.done}/${progress.total} · 解析 ${progress.parsed} · 跳过 ${progress.skipped}`
+                  : "枚举文件…"}
+                {progress.errors > 0 && <span className="text-amber-400"> · 错误 {progress.errors}</span>}
+              </span>
+            </div>
+            <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-indigo-500 transition-all duration-200"
+                style={{
+                  width: `${
+                    progress.adapter_count > 0
+                      ? Math.min(
+                          100,
+                          ((progress.adapter_index +
+                            (progress.total > 0 ? progress.done / progress.total : 0)) /
+                            progress.adapter_count) *
+                            100
+                        )
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 flex gap-2.5 min-h-0">
           <div className="flex-1 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 overflow-hidden flex min-w-0">

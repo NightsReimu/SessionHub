@@ -97,6 +97,23 @@ pub struct ScanReport {
     pub duration_ms: u128,
 }
 
+/// 扫描进度事件（scan-progress）：先枚举得到 total，再按 done 推进
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanProgress {
+    pub adapter_id: String,
+    /// 第几个可扫描 adapter（0 起）
+    pub adapter_index: usize,
+    /// 可扫描 adapter 总数
+    pub adapter_count: usize,
+    /// 当前 adapter 已处理条数（0 且 total=0 表示仍在枚举）
+    pub done: usize,
+    /// 当前 adapter 待处理总数
+    pub total: usize,
+    pub parsed: usize,
+    pub skipped: usize,
+    pub errors: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MessagePreview {
     pub role: String,
