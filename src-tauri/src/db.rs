@@ -263,7 +263,8 @@ impl Db {
             let sql = format!(
                 "SELECT {cols} FROM sessions WHERE title LIKE ?1 OR project_path LIKE ?1 \
                  OR EXISTS(SELECT 1 FROM session_meta m WHERE m.harness_id=sessions.harness_id \
-                    AND m.session_id=sessions.session_id AND (m.note LIKE ?1 OR m.tags LIKE ?1)) \
+                    AND m.session_id=sessions.session_id AND (m.note LIKE ?1 OR m.tags LIKE ?1 \
+                    OR m.custom_title LIKE ?1)) \
                  ORDER BY COALESCE(ended_at, started_at, 0) DESC LIMIT {limit}",
                 cols = Self::SESSION_COLS
             );

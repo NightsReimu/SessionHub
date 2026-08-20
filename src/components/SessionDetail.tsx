@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AdapterInfo, MessagePreview, SessionDto, api } from "../api";
 import { fmtTime, fmtTokens } from "./SessionList";
 import { CloseIcon, ExternalIcon, PlayIcon, StarIcon } from "./icons";
@@ -27,6 +27,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
   const [busy, setBusy] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const msgSeq = useRef(0);
   const noteTimer = useRef<number | null>(null);
   const metaRef = useRef(session.meta);
   const savedMetaRef = useRef(session.meta);
@@ -59,25 +60,32 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
     };
   }, [session.harness_id, session.session_id]);
 
-  const loadMessages = async () => {
+  const loadMessages = useCallback(() => {
+    // 序号守卫：只有最后一次请求的结果能落地，会话快速切换时
+    // 旧会话的响应永远不会覆盖新会话的内容
+    const seq = ++msgSeq.current;
     setMsgLoading(true);
     setMsgError(null);
-    try {
-      setMessages(await api.getMessages(session.harness_id, session.session_id, 400));
-    } catch (e) {
-      setMsgError(String(e));
-    } finally {
-      setMsgLoading(false);
-    }
-  };
+    api
+      .getMessages(session.harness_id, session.session_id, 400)
+      .then((data) => {
+        if (seq === msgSeq.current) setMessages(data);
+      })
+      .catch((e) => {
+        if (seq === msgSeq.current) setMsgError(String(e));
+      })
+      .finally(() => {
+        if (seq === msgSeq.current) setMsgLoading(false);
+      });
+  }, [session.harness_id, session.session_id]);
 
-  // 选中即自动加载对话记录
+  // 会话切换：在同一个 effect 里完成重置和加载，
+  // 避免「清空」与「请求」分布在两个 effect 导致的读到旧状态/不触发
   useEffect(() => {
-    if (canRead && messages === null && !msgLoading) {
-      void loadMessages();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.harness_id, session.session_id, canRead]);
+    setMessages(null);
+    setMsgError(null);
+    if (canRead) loadMessages();
+  }, [session.harness_id, session.session_id, canRead, loadMessages]);
 
   // 新消息加载后滚到底部（最近的对话在末尾）
   useEffect(() => {
@@ -144,9 +152,10 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
   const commitTitle = () => {
     const v = titleDraft.trim();
     setEditingTitle(false);
-    if (v && v !== displayTitle) {
-      saveMeta({ custom_title: v });
-    }
+    const current = session.meta.custom_title?.trim() || session.title;
+    if (v === current) return; // 无变化
+    // 留空 = 恢复 harness 原标题（custom_title 置空）
+    saveMeta({ custom_title: v || null });
   };
 
   const chip = (text: string) => (

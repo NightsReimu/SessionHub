@@ -44,23 +44,56 @@ pub fn open_gui_app_if_installed(name: &str) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        let candidates = [
+        let dirs = [
             PathBuf::from(&local).join(format!("Programs/{name}")),
             PathBuf::from(format!("C:/Program Files/{name}")),
         ];
-        if candidates.iter().any(|p| p.exists()) {
-            Command::new("cmd")
-                .args(["/c", "start", "", name])
-                .spawn()
-                .map_err(|e| format!("打开 {name} 失败：{e}"))?;
-            return Ok(format!("start {name}"));
+        for d in &dirs {
+            if !d.is_dir() {
+                continue;
+            }
+            // 直接在应用目录顶层找 exe 拉起——cmd start 对未注册 App Paths
+            // 的名字也会假成功，导致终端 fallback 不再执行
+            if let Ok(entries) = std::fs::read_dir(d) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    let is_exe = p
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .map(|x| x.eq_ignore_ascii_case("exe"))
+                        .unwrap_or(false);
+                    if is_exe {
+                        Command::new(&p)
+                            .spawn()
+                            .map_err(|err| format!("打开 {name} 失败：{err}"))?;
+                        return Ok(p.to_string_lossy().into_owned());
+                    }
+                }
+            }
         }
         return Err(format!("{name} 未安装"));
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if Command::new("gtk-launch").arg(name).spawn().is_ok() {
-            return Ok(name.to_string());
+        // gtk-launch 对不存在的 desktop id 也能成功创建进程（假成功），
+        // 先确认 desktop 文件真实存在
+        let home = dirs::home_dir().unwrap_or_default();
+        let lower = name.to_lowercase();
+        let desktop_dirs = [
+            home.join(".local/share/applications"),
+            PathBuf::from("/usr/share/applications"),
+        ];
+        for dir in &desktop_dirs {
+            for cand in [format!("{name}.desktop"), format!("{lower}.desktop")] {
+                if dir.join(&cand).exists() {
+                    let id = cand.trim_end_matches(".desktop").to_string();
+                    Command::new("gtk-launch")
+                        .arg(&id)
+                        .spawn()
+                        .map_err(|e| format!("打开 {name} 失败：{e}"))?;
+                    return Ok(id);
+                }
+            }
         }
         Err(format!("{name} 未安装"))
     }

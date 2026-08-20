@@ -180,9 +180,10 @@ impl HarnessAdapter for GenericAdapter {
         (out, errors)
     }
     fn parse(&self, raw: &RawRef) -> Option<Session> {
-        // 启发式：尝试从文件头几行/顶层字段找 id、cwd、title；找不到就用带命名空间的兜底 id
+        // 启发式提取 cwd/title/时间；id 一律用路径命名空间的稳定值——
+        // 内容里的 id 无法保证跨目录唯一，且必须与 enumerate 的 identity 一致，
+        // 否则增量扫描永远命中不了扫描戳
         let path = &raw.path;
-        let mut content_id: Option<String> = None;
         let mut title = String::new();
         let mut cwd = String::new();
         let mut first_ts: Option<i64> = None;
@@ -194,11 +195,6 @@ impl HarnessAdapter for GenericAdapter {
                 n += 1;
                 if n > 200 {
                     return;
-                }
-                if content_id.is_none() {
-                    if let Some(s) = json_str(&v, "id").or_else(|| json_str(&v, "sessionId")) {
-                        content_id = Some(s.to_string());
-                    }
                 }
                 if cwd.is_empty() {
                     if let Some(c) = json_str(&v, "cwd").or_else(|| json_str(&v, "projectPath")) {
@@ -214,9 +210,6 @@ impl HarnessAdapter for GenericAdapter {
             });
         } else if let Ok(text) = std::fs::read_to_string(path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(s) = json_str(&v, "id").or_else(|| json_str(&v, "sessionId")) {
-                    content_id = Some(s.to_string());
-                }
                 if let Some(t) = json_str(&v, "title").or_else(|| json_str(&v, "summary")) {
                     title = t.to_string();
                 }
@@ -228,7 +221,7 @@ impl HarnessAdapter for GenericAdapter {
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         Some(Session {
-            session_id: content_id.unwrap_or_else(|| Self::fallback_id(path)),
+            session_id: Self::fallback_id(path),
             harness_id: self.id().to_string(),
             project_path: cwd,
             title,
@@ -303,6 +296,36 @@ mod tests {
         // 同一文件 id 稳定（重扫描不会产生新会话）
         let s1b = a.parse(&file_raw_ref(&f1).unwrap()).unwrap();
         assert_eq!(s1.session_id, s1b.session_id);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 即使内容里写了相同的 id，跨目录也必须得到不同 session_id；
+    /// 且 session_id 与 enumerate 的 identity 一致（增量扫描命中的前提）
+    #[test]
+    fn content_ids_are_not_trusted() {
+        let base = std::env::temp_dir().join(format!("sh-generic-cid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (d1, d2) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::create_dir_all(&d2).unwrap();
+        let body = "{\"id\":\"same-id\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n";
+        let (f1, f2) = (d1.join("x.jsonl"), d2.join("x.jsonl"));
+        std::fs::write(&f1, body).unwrap();
+        std::fs::write(&f2, body).unwrap();
+
+        let a = GenericAdapter;
+        let raw1 = file_raw_ref(&f1).unwrap();
+        let s1 = a.parse(&raw1).unwrap();
+        let s2 = a.parse(&file_raw_ref(&f2).unwrap()).unwrap();
+        assert_ne!(s1.session_id, s2.session_id, "内容 id 相同也必须按路径区分");
+
+        // identity 一致性：enumerate 产出的 identity 必须等于 parse 的 session_id
+        let (raws, _) = a.enumerate(&base, &DetectCtx { home: base.clone() });
+        for raw in &raws {
+            let s = a.parse(raw).unwrap();
+            assert_eq!(raw.identity.as_deref(), Some(s.session_id.as_str()));
+        }
 
         let _ = std::fs::remove_dir_all(&base);
     }

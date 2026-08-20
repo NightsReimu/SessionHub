@@ -59,8 +59,8 @@ pub trait HarnessAdapter: Send + Sync {
 | DeepSeek Harness | `~/.dsh/storages/session_projcache.json` + `~/.dsh/sessions/*/session.jsonl.zstd` | JSON 索引 + zstd JSONL | ✅ 完整支持 |
 | Claude Desktop / Kimi / OpenClaw / Hermes | 见 `adapters/generic.rs` | 待确认 | 🕐 占位探测 + Generic 兜底 |
 
-> SQLite 型 harness（OpenCode/Zcode）的会话存在共享数据库里，因此**不支持删除单会话**；
-> 备份/导出不受限。
+> SQLite 型 harness（OpenCode/Zcode）的会话存在共享数据库里，因此**不支持删除和备份单会话**；
+> 导出 Markdown/JSONL 不受影响。
 
 ## 动作
 
