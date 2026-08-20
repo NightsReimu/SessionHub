@@ -1,0 +1,104 @@
+import { invoke } from "@tauri-apps/api/core";
+
+export interface Capabilities {
+  can_resume: boolean;
+  can_delete: boolean;
+  can_backup: boolean;
+  can_read_messages: boolean;
+}
+
+export interface AdapterInfo {
+  id: string;
+  name: string;
+  detected: boolean;
+  roots: string[];
+  capabilities: Capabilities;
+}
+
+export interface Session {
+  session_id: string;
+  harness_id: string;
+  project_path: string;
+  title: string;
+  started_at: number | null;
+  ended_at: number | null;
+  message_count: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cost_usd: number | null;
+  status: string;
+  raw_path: string;
+  source_format: string;
+  file_size: number;
+  file_mtime: number;
+}
+
+export interface SessionMeta {
+  tags: string[];
+  note: string;
+  favorite: boolean;
+}
+
+export interface SessionDto extends Session {
+  meta: SessionMeta;
+}
+
+export interface AdapterScanStat {
+  adapter_id: string;
+  detected: boolean;
+  scanned: number;
+  parsed: number;
+  errors: number;
+}
+
+export interface ScanReport {
+  adapters: AdapterScanStat[];
+  total_sessions: number;
+  duration_ms: number;
+}
+
+export interface MessagePreview {
+  role: string;
+  text: string;
+  timestamp: number | null;
+}
+
+export interface Counts {
+  total: number;
+  favorites: number;
+  per_harness: Record<string, number>;
+}
+
+export interface HubPaths {
+  hub_dir: string;
+  backups_dir: string;
+  exports_dir: string;
+  db_path: string;
+}
+
+export const api = {
+  listAdapters: () => invoke<AdapterInfo[]>("list_adapters"),
+  scan: (full: boolean) => invoke<ScanReport>("scan_sessions", { full }),
+  listSessions: (harness: string | null, favoritesOnly: boolean, limit = 800, offset = 0) =>
+    invoke<SessionDto[]>("list_sessions", { harness, favoritesOnly, limit, offset }),
+  searchSessions: (query: string) => invoke<SessionDto[]>("search_sessions", { query }),
+  getMessages: (harnessId: string, sessionId: string, limit = 300) =>
+    invoke<MessagePreview[]>("get_session_messages", { harnessId, sessionId, limit }),
+  resume: (harnessId: string, sessionId: string) =>
+    invoke<string>("resume_session", { harnessId, sessionId }),
+  deleteSession: (harnessId: string, sessionId: string) =>
+    invoke<string>("delete_session", { harnessId, sessionId }),
+  backup: (harnessId: string, sessionId: string) =>
+    invoke<string>("backup_session", { harnessId, sessionId }),
+  exportSession: (harnessId: string, sessionId: string, format: "md" | "jsonl") =>
+    invoke<string>("export_session", { harnessId, sessionId, format }),
+  reveal: (harnessId: string, sessionId: string) =>
+    invoke<string>("reveal_raw", { harnessId, sessionId }),
+  setMeta: (harnessId: string, sessionId: string, meta: SessionMeta) =>
+    invoke<void>("set_session_meta", { harnessId, sessionId, meta }),
+  counts: () => invoke<Counts>("get_counts"),
+  hubPaths: () => invoke<HubPaths>("get_hub_paths"),
+  watcherStart: () => invoke<boolean>("watcher_start"),
+  watcherStop: () => invoke<boolean>("watcher_stop"),
+  watcherStatus: () => invoke<boolean>("watcher_status"),
+};
