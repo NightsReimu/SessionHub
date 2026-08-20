@@ -180,23 +180,34 @@ pub fn export_session(session: &Session, messages: &[crate::models::MessagePrevi
 
     match format {
         "jsonl" => {
-            let dest = unique_dest(&dir, &format!("{base}.jsonl"));
             let src = Path::new(&session.raw_path);
-            if src.is_file() && session.source_format == "jsonl" {
+            // raw 是独立会话文件（jsonl/json/generic）时直接复制原文件；
+            // 共享数据库或全局索引文件绝不当成“单会话导出”复制出去
+            let per_session_raw = src.is_file()
+                && matches!(session.source_format.as_str(), "jsonl" | "json" | "generic");
+            if per_session_raw {
+                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("jsonl");
+                let dest = unique_dest(&dir, &format!("{base}.{ext}"));
                 std::fs::copy(src, &dest).map_err(|e| format!("复制失败：{e}"))?;
-            } else {
-                let mut out = String::new();
-                for m in messages {
-                    out.push_str(
-                        &serde_json::json!({
-                            "role": m.role, "text": m.text, "timestamp": m.timestamp,
-                        })
-                        .to_string(),
-                    );
-                    out.push('\n');
-                }
-                std::fs::write(&dest, out).map_err(|e| e.to_string())?;
+                return Ok(dest);
             }
+            if messages.is_empty() {
+                return Err(
+                    "没有可导出的内容：该会话的消息不可读取，且 raw 不是独立会话文件".to_string(),
+                );
+            }
+            let dest = unique_dest(&dir, &format!("{base}.jsonl"));
+            let mut out = String::new();
+            for m in messages {
+                out.push_str(
+                    &serde_json::json!({
+                        "role": m.role, "text": m.text, "timestamp": m.timestamp,
+                    })
+                    .to_string(),
+                );
+                out.push('\n');
+            }
+            std::fs::write(&dest, out).map_err(|e| e.to_string())?;
             Ok(dest)
         }
         _ => {

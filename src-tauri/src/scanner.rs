@@ -29,8 +29,16 @@ pub fn scan_all(
             stats.push(stat);
             continue;
         }
+        let roots = adapter.roots(ctx);
+        if roots.is_empty() {
+            // detected 但当前没有任何可扫描根：无法区分“全被删了”和“暂时不可用”，
+            // 按错误处理，全量扫描绝不在这种状态 prune
+            stat.errors += 1;
+            stats.push(stat);
+            continue;
+        }
         let mut seen_ids: Vec<String> = Vec::new();
-        for root in adapter.roots(ctx) {
+        for root in roots {
             let (raws, enum_errors) = adapter.enumerate(&root, ctx);
             stat.errors += enum_errors;
             for raw in raws {
@@ -65,10 +73,9 @@ pub fn scan_all(
             }
         }
         // prune 安全规则（全量扫描）：
-        // - 有任何错误（目录遍历失败/解析失败/索引损坏）→ 不动索引，
-        //   “目录暂时不可读”绝不能被当成“会话全被删了”
-        // - 零错误但一条都没扫到 → 根目录可读但确实是空的，
-        //   说明源文件真被删完了，正常清理索引
+        // - 有任何错误（目录遍历失败/解析失败/索引损坏/必需根目录消失）→ 不动索引
+        // - 零错误但一条都没扫到 → 根目录可读但确实是空的，正常清理
+        stat.errors += adapter.required_roots_missing(ctx);
         if full && stat.errors == 0 {
             let _ = db.prune_not_in(adapter.id(), &seen_ids);
         }
@@ -108,6 +115,8 @@ mod tests {
         raws: StdMutex<Vec<RawRef>>,
         errors: StdMutex<usize>,
         fail_parse: StdMutex<Vec<String>>,
+        required_missing: StdMutex<usize>,
+        roots_empty: StdMutex<bool>,
     }
 
     struct MockAdapter {
@@ -140,7 +149,14 @@ mod tests {
             true
         }
         fn roots(&self, _ctx: &DetectCtx) -> Vec<PathBuf> {
-            vec![PathBuf::from("/mock")]
+            if *self.shared.roots_empty.lock().unwrap() {
+                Vec::new()
+            } else {
+                vec![PathBuf::from("/mock")]
+            }
+        }
+        fn required_roots_missing(&self, _ctx: &DetectCtx) -> usize {
+            *self.shared.required_missing.lock().unwrap()
         }
         fn enumerate(&self, _root: &std::path::Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
             (
@@ -217,6 +233,39 @@ mod tests {
         mock_set(&shared, &[], 0, &[]);
         scan_all(&db, &adapters, &ctx, true);
         assert_eq!(db.counts().unwrap().total, 0, "源文件全删后应清理索引");
+
+        cleanup_db(&path);
+    }
+
+    /// 必需根目录消失 / 无根可扫：即使其它根可读且零枚举错误，也不得 prune
+    #[test]
+    fn full_scan_prune_blocked_by_missing_required_root() {
+        let (db, path) = temp_db("reqroot");
+        let shared = Arc::new(MockShared::default());
+        let adapters: Vec<Box<dyn HarnessAdapter>> =
+            vec![Box::new(MockAdapter { shared: shared.clone() })];
+        let ctx = DetectCtx::new();
+
+        mock_set(&shared, &["a", "b"], 0, &[]);
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 2);
+
+        // 主根消失（enumerable 只剩 b）：不得 prune a
+        mock_set(&shared, &["b"], 0, &[]);
+        *shared.required_missing.lock().unwrap() = 1;
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 2, "必需根缺失时不得 prune");
+        assert!(db.get_session("mock", "a").is_some());
+
+        // 主根恢复 → prune 恢复工作
+        *shared.required_missing.lock().unwrap() = 0;
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 1);
+
+        // detected 但没有任何可扫描根 → 同样按错误处理
+        *shared.roots_empty.lock().unwrap() = true;
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 1, "无根可扫时不得 prune");
 
         cleanup_db(&path);
     }

@@ -73,6 +73,16 @@ impl HarnessAdapter for CodexAdapter {
         .collect()
     }
 
+    /// sessions 是主存储根：它在 detect 之后若消失（被改名/移动），
+    /// 必须让全量扫描视为错误，否则 archived 可读就会误 prune 活跃会话
+    fn required_roots_missing(&self, ctx: &DetectCtx) -> usize {
+        if ctx.join(".codex/sessions").is_dir() {
+            0
+        } else {
+            1
+        }
+    }
+
     fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
         let (files, mut errors) = collect_files(root, &[".jsonl"]);
         let mut out = Vec::new();

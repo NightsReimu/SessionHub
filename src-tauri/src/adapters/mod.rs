@@ -48,6 +48,12 @@ pub trait HarnessAdapter: Send + Sync {
         let _ = s;
         true
     }
+    /// 缺失的“必需根目录”数量（>0 时全量扫描不得 prune）。
+    /// 多根 adapter 用它区分「主目录在 detect 之后消失」（错误，保护索引）
+    /// 与「可选目录从未创建」（正常，见 roots() 的过滤）。
+    fn required_roots_missing(&self, _ctx: &DetectCtx) -> usize {
+        0
+    }
     /// 会话级删除许可：capabilities 允许 且 raw_path 指向独立存储
     fn can_delete_session(&self, s: &Session) -> bool {
         self.capabilities().can_delete && self.can_use_raw_path(s)

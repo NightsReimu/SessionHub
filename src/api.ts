@@ -94,6 +94,10 @@ export interface HubPaths {
   db_path: string;
 }
 
+// 元数据保存全局串行化：快速连续修改标签/收藏/备注时，
+// 保证请求按发起顺序落库，旧快照不可能覆盖新状态
+let metaSaveChain: Promise<unknown> = Promise.resolve();
+
 export const api = {
   listAdapters: () => invoke<AdapterInfo[]>("list_adapters"),
   scan: (full: boolean) => invoke<ScanReport>("scan_sessions", { full }),
@@ -112,8 +116,14 @@ export const api = {
     invoke<string>("export_session", { harnessId, sessionId, format }),
   reveal: (harnessId: string, sessionId: string) =>
     invoke<string>("reveal_raw", { harnessId, sessionId }),
-  setMeta: (harnessId: string, sessionId: string, meta: SessionMeta) =>
-    invoke<void>("set_session_meta", { harnessId, sessionId, meta }),
+  setMeta: (harnessId: string, sessionId: string, meta: SessionMeta) => {
+    const p = metaSaveChain.then(() =>
+      invoke<void>("set_session_meta", { harnessId, sessionId, meta })
+    );
+    // 单个失败不阻塞后续保存，但调用方仍能感知本次失败
+    metaSaveChain = p.catch(() => undefined);
+    return p;
+  },
   counts: () => invoke<Counts>("get_counts"),
   getStats: () => invoke<StatsOverview>("get_stats"),
   hubPaths: () => invoke<HubPaths>("get_hub_paths"),
