@@ -4,6 +4,21 @@ use super::util::*;
 use super::{DetectCtx, HarnessAdapter};
 use crate::models::{Capabilities, RawRef, ResumeSpec, Session};
 
+/// Placeholder 探测与 Generic 兜底共用同一组候选目录，
+/// 保证「检测到」的目录一定也是实际被扫描的目录
+pub(crate) const GENERIC_CANDIDATES: &[&str] = &[
+    "Library/Application Support/Claude",
+    "AppData/Roaming/Claude",
+    ".claude-desktop",
+    ".kimi",
+    "Library/Application Support/kimi",
+    "AppData/Roaming/kimi",
+    ".openclaw",
+    "Library/Application Support/openclaw",
+    ".hermes",
+    "Library/Application Support/hermes",
+];
+
 /// 未确认格式的 harness 占位 adapter：探测安装目录，命中即报告“已检测”，
 /// 枚举/解析交给 GenericAdapter 的启发式逻辑兜底。
 pub struct PlaceholderAdapter {
@@ -110,13 +125,9 @@ impl GenericAdapter {
     }
 
     fn candidate_roots(ctx: &DetectCtx) -> Vec<PathBuf> {
-        let rel = [
-            ".claude-desktop",
-            ".kimi/sessions",
-            ".openclaw/sessions",
-            ".hermes/sessions",
-        ];
-        let mut roots: Vec<PathBuf> = rel
+        // 与 PlaceholderAdapter 的探测目录保持一致：
+        // 「检测到」的目录必须也是实际被扫描的目录
+        let mut roots: Vec<PathBuf> = GENERIC_CANDIDATES
             .iter()
             .map(|r| ctx.join(r))
             .filter(|p| p.is_dir())
@@ -172,7 +183,8 @@ impl HarnessAdapter for GenericAdapter {
         Self::candidate_roots(ctx)
     }
     fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
-        let (files, mut errors) = collect_files(root, &[".jsonl", ".json"]);
+        // 限制遍历深度：Application Support 目录里缓存文件很多
+        let (files, mut errors) = collect_files_depth(root, &[".jsonl", ".json"], 4);
         let mut out = Vec::new();
         for p in files {
             match file_raw_ref(&p) {

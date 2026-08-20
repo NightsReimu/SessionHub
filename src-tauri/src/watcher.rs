@@ -14,10 +14,12 @@ pub struct WatcherHandle {
 }
 
 /// 监听所有已检测 adapter 的根目录；文件变化去抖 800ms 后做增量扫描并通知前端。
+/// scan_lock 与手动扫描互斥，防止并发扫描互相覆盖索引。
 pub fn start(
     app: AppHandle,
     db: Arc<Db>,
     adapters: Arc<Vec<Box<dyn HarnessAdapter>>>,
+    scan_lock: Arc<parking_lot::Mutex<()>>,
 ) -> Result<WatcherHandle, String> {
     let ctx = DetectCtx::new();
     let (tx, rx) = channel::<notify::Result<Event>>();
@@ -60,6 +62,7 @@ pub fn start(
             Ok(_) => {
                 // 去抖：排空积压事件
                 while rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+                let _scan_guard = scan_lock.lock();
                 let report = scan_all(
                     &db,
                     &adapters,

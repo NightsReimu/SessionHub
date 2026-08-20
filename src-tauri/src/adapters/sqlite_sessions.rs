@@ -58,20 +58,22 @@ fn family_price(model: &str) -> (f64, f64, f64) {
     }
 }
 
-/// 从 model_usage 按 session 聚合 token 与估算费用（zcode 的 session 表没有这些列）
-fn aggregate_usage(
-    conn: &Connection,
-) -> std::collections::HashMap<String, (u64, u64, u64, u64, u64, f64)> {
+/// 从 model_usage 按 session 聚合 token 与估算费用（zcode 的 session 表没有这些列）。
+/// 返回 (聚合结果, 错误数)：usage_pricing 模式下 model_usage 缺失或查询失败
+/// 必须显式报错，否则旧库/字段变化会让统计永久缺失且被误标迁移完成
+type UsageMap = std::collections::HashMap<String, (u64, u64, u64, u64, u64, f64)>;
+
+fn aggregate_usage(conn: &Connection) -> (UsageMap, usize) {
     let mut map = std::collections::HashMap::new();
     if !table_exists(conn, "model_usage") {
-        return map;
+        return (map, 1);
     }
     let sql = "SELECT session_id, model_id, \
                SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), \
                SUM(cache_creation_input_tokens), SUM(cache_read_input_tokens) \
                FROM model_usage GROUP BY session_id, model_id";
     let Ok(mut stmt) = conn.prepare(sql) else {
-        return map;
+        return (map, 1);
     };
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -84,8 +86,15 @@ fn aggregate_usage(
             r.get::<_, i64>(6)?,
         ))
     });
-    let Ok(rows) = rows else { return map };
-    for r in rows.flatten() {
+    let Ok(rows) = rows else {
+        return (map, 1);
+    };
+    let mut errors = 0usize;
+    for r in rows {
+        let Ok(r) = r else {
+            errors += 1;
+            continue;
+        };
         let (sid, model, input, output, reasoning, cache_w, cache_r) = r;
         let (pi, po, pcr) = family_price(&model);
         let cost = (input.max(0) as f64 * pi
@@ -102,7 +111,7 @@ fn aggregate_usage(
         e.4 += cache_r.max(0) as u64;
         e.5 += cost;
     }
-    map
+    (map, errors)
 }
 
 pub struct OpenCodeAdapter;
@@ -180,12 +189,14 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
         }
     }
 
-    // session 表没有用量列时（zcode），从 model_usage 聚合 token 与估算费用
-    let usage = if cfg.usage_pricing {
+    // session 表没有用量列时（zcode），从 model_usage 聚合 token 与估算费用；
+    // 聚合失败计入错误，阻断 prune 和迁移版本写入
+    let (usage, usage_errors) = if cfg.usage_pricing {
         aggregate_usage(&conn)
     } else {
-        std::collections::HashMap::new()
+        (std::collections::HashMap::new(), 0)
     };
+    errors += usage_errors;
 
     let mut out = Vec::new();
     // 扫描戳要感知 WAL：SQLite 的写入先进 *.db-wal，主 .db 的 size/mtime 可能长期不变

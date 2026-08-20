@@ -26,35 +26,6 @@ fn extract_codex_text(content: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// 在 token_count 之类的 payload 里递归找 token 数字（格式无文档，防御式）
-fn find_token_numbers(v: &serde_json::Value, input: &mut Option<u64>, output: &mut Option<u64>) {
-    match v {
-        serde_json::Value::Object(map) => {
-            for (k, val) in map {
-                match k.as_str() {
-                    "input_tokens" | "uncachedInputTokens" => {
-                        if let Some(n) = val.as_u64() {
-                            *input = Some(n);
-                        }
-                    }
-                    "output_tokens" | "outputTokens" => {
-                        if let Some(n) = val.as_u64() {
-                            *output = Some(n);
-                        }
-                    }
-                    _ => find_token_numbers(val, input, output),
-                }
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for x in arr {
-                find_token_numbers(x, input, output);
-            }
-        }
-        _ => {}
-    }
-}
-
 impl HarnessAdapter for CodexAdapter {
     fn id(&self) -> &'static str {
         "codex"
@@ -121,8 +92,10 @@ impl HarnessAdapter for CodexAdapter {
         let mut last_ts: Option<i64> = None;
         let mut msg_count: u32 = 0;
         let mut first_user_text: Option<String> = None;
-        let mut tokens_in: Option<u64> = None;
-        let mut tokens_out: Option<u64> = None;
+        // total_token_usage 是累计快照（取最后一个非零值，忽略全零记录）；
+        // last_token_usage 是单轮增量（全文件求和作为兜底）
+        let mut cumulative: Option<(u64, u64, u64)> = None;
+        let mut turn_sum = (0u64, 0u64, 0u64);
         let archived = raw.path.to_string_lossy().contains("archived_sessions");
 
         let ok = for_each_jsonl_line(&raw.path, |v| {
@@ -178,7 +151,23 @@ impl HarnessAdapter for CodexAdapter {
                             }
                         }
                         "token_count" => {
-                            find_token_numbers(&payload, &mut tokens_in, &mut tokens_out);
+                            // 实测结构：payload.info.{total_token_usage, last_token_usage}
+                            let info = payload.get("info").unwrap_or(&payload);
+                            if let Some(t) = info.get("total_token_usage") {
+                                let v = (
+                                    json_u64(t, "input_tokens").unwrap_or(0),
+                                    json_u64(t, "cached_input_tokens").unwrap_or(0),
+                                    json_u64(t, "output_tokens").unwrap_or(0),
+                                );
+                                if v.0 + v.2 > 0 {
+                                    cumulative = Some(v);
+                                }
+                            }
+                            if let Some(t) = info.get("last_token_usage") {
+                                turn_sum.0 += json_u64(t, "input_tokens").unwrap_or(0);
+                                turn_sum.1 += json_u64(t, "cached_input_tokens").unwrap_or(0);
+                                turn_sum.2 += json_u64(t, "output_tokens").unwrap_or(0);
+                            }
                         }
                         _ => {}
                     }
@@ -199,10 +188,19 @@ impl HarnessAdapter for CodexAdapter {
                 .unwrap_or(stem)
         });
 
-        // GPT-5 系刊例价估算（输入 $1.25/M，输出 $10/M）
+        // 优先累计快照；快照全零时退回单轮求和
+        let (tin, tcached, tout) = match cumulative {
+            Some(c) if c.0 + c.2 > 0 => c,
+            _ => turn_sum,
+        };
+        let tokens_in = if tin > 0 { Some(tin) } else { None };
+        let tokens_out = if tout > 0 { Some(tout) } else { None };
+
+        // GPT-5 系刊例价：普通输入 $1.25/M、缓存输入 $0.125/M、输出 $10/M
         let cost = {
-            let usd = (tokens_in.unwrap_or(0) as f64 * 1.25
-                + tokens_out.unwrap_or(0) as f64 * 10.0)
+            let usd = (tin.saturating_sub(tcached) as f64 * 1.25
+                + tcached as f64 * 0.125
+                + tout as f64 * 10.0)
                 / 1e6;
             if usd > 0.0 {
                 Some(usd)
@@ -329,5 +327,66 @@ mod tests {
         assert_eq!(a.roots(&ctx).len(), 2);
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// token 解析：忽略全零 total 快照，用最后一个非零累计值；
+    /// 缓存输入按折扣价计费；累计全零时退回 last 求和
+    #[test]
+    fn token_count_prefers_last_nonzero_cumulative() {
+        let p = std::env::temp_dir().join(format!("sh-codex-tok-{}.jsonl", std::process::id()));
+        let line = |total: (u64, u64, u64), last: (u64, u64, u64)| {
+            format!(
+                r#"{{"timestamp":"2026-01-01T00:00:00.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}},"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
+                total.0, total.1, total.2, last.0, last.1, last.2
+            )
+        };
+        let mut body = String::from(
+            r#"{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"sid-9","cwd":"/tmp/p"}}"#,
+        );
+        body.push('\n');
+        body.push_str(&line((0, 0, 0), (9804, 9000, 100)));
+        body.push('\n');
+        body.push_str(&line((50000, 40000, 1000), (0, 0, 0)));
+        body.push('\n');
+        std::fs::write(&p, body).unwrap();
+
+        let a = CodexAdapter;
+        let s = a.parse(&file_raw_ref(&p).unwrap()).unwrap();
+        assert_eq!(s.tokens_in, Some(50000));
+        assert_eq!(s.tokens_out, Some(1000));
+        // 未缓存 10000×$1.25/M + 缓存 40000×$0.125/M + 输出 1000×$10/M
+        // = 0.0125 + 0.005 + 0.01 = 0.0275
+        let cost = s.cost_usd.expect("应估算费用");
+        assert!((cost - 0.0275).abs() < 1e-9, "cost = {cost}");
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// 累计快照全零 → 退回 last_token_usage 求和
+    #[test]
+    fn token_count_falls_back_to_turn_sum() {
+        let p = std::env::temp_dir().join(format!("sh-codex-tok2-{}.jsonl", std::process::id()));
+        let line = |total: (u64, u64, u64), last: (u64, u64, u64)| {
+            format!(
+                r#"{{"timestamp":"2026-01-01T00:00:00.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}},"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
+                total.0, total.1, total.2, last.0, last.1, last.2
+            )
+        };
+        let mut body = String::from(
+            r#"{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"sid-8","cwd":"/tmp/p"}}"#,
+        );
+        body.push('\n');
+        body.push_str(&line((0, 0, 0), (5000, 1000, 200)));
+        body.push('\n');
+        body.push_str(&line((0, 0, 0), (4000, 0, 300)));
+        body.push('\n');
+        std::fs::write(&p, body).unwrap();
+
+        let a = CodexAdapter;
+        let s = a.parse(&file_raw_ref(&p).unwrap()).unwrap();
+        assert_eq!(s.tokens_in, Some(9000));
+        assert_eq!(s.tokens_out, Some(500));
+
+        let _ = std::fs::remove_file(&p);
     }
 }

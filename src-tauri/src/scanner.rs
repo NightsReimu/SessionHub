@@ -7,7 +7,7 @@ use crate::models::{AdapterScanStat, ScanProgress, ScanReport};
 /// 解析器版本：解析逻辑产出字段发生变化（如新增费用估算）时 +1。
 /// 按 harness 分别记录迁移状态——全局单一版本会在某 harness 恰好未安装时
 /// 误标完成，导致其旧会话永远不补算新字段
-const PARSE_VERSION: &str = "3";
+const PARSE_VERSION: &str = "4";
 
 /// 扫描所有 adapter：enumerate → 增量跳过 → parse → upsert。
 /// full=true 时强制重解析，并清理索引里已不存在的会话。

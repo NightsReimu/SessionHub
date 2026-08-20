@@ -17,6 +17,9 @@ pub struct AppState {
     db: Arc<Db>,
     adapters: Arc<Vec<Box<dyn HarnessAdapter>>>,
     watcher: Mutex<Option<watcher::WatcherHandle>>,
+    /// 全局扫描锁：监听线程的增量扫描与手动（全量）扫描互斥，
+    /// 防止一边写入新索引、另一边按旧 seen_ids prune
+    scan_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 impl AppState {
@@ -81,6 +84,7 @@ fn list_adapters(state: tauri::State<AppState>) -> Vec<AdapterInfo> {
 
 #[tauri::command]
 fn scan_sessions(app: tauri::AppHandle, state: tauri::State<AppState>, full: bool) -> ScanReport {
+    let _scan_guard = state.scan_lock.lock();
     let emit = |p: ScanProgress| {
         let _ = app.emit("scan-progress", p);
     };
@@ -286,7 +290,12 @@ fn watcher_start(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result
     if guard.is_some() {
         return Ok(true);
     }
-    let handle = watcher::start(app, state.db.clone(), state.adapters.clone())?;
+    let handle = watcher::start(
+        app,
+        state.db.clone(),
+        state.adapters.clone(),
+        state.scan_lock.clone(),
+    )?;
     *guard = Some(handle);
     Ok(true)
 }
@@ -314,6 +323,7 @@ pub fn run() {
         db: Arc::new(db),
         adapters: Arc::new(all_adapters()),
         watcher: Mutex::new(None),
+        scan_lock: Arc::new(parking_lot::Mutex::new(())),
     };
 
     tauri::Builder::default()

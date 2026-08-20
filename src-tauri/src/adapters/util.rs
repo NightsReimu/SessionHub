@@ -123,12 +123,20 @@ pub fn derive_status(mtime_ms: i64) -> String {
 /// 返回 (文件列表, 错误数)：根目录不存在或遍历失败都计入错误数，
 /// 让扫描器能区分“源文件真的全删了”和“目录暂时不可读”。
 pub fn collect_files(root: &Path, exts: &[&str]) -> (Vec<PathBuf>, usize) {
+    collect_files_depth(root, exts, usize::MAX)
+}
+
+/// 限制最大深度的 collect_files（用于 Application Support 这类大目录）
+pub fn collect_files_depth(root: &Path, exts: &[&str], max_depth: usize) -> (Vec<PathBuf>, usize) {
     let mut out = Vec::new();
     let mut errors = 0usize;
     if !root.exists() {
         return (out, 1);
     }
-    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+    for entry in walkdir::WalkDir::new(root)
+        .max_depth(max_depth)
+        .follow_links(false)
+    {
         match entry {
             Ok(e) => {
                 if !e.file_type().is_file() {

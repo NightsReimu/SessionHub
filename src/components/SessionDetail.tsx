@@ -116,7 +116,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
   const addTag = () => {
     const t = tagInput.trim().replace(/^#/, "");
     if (!t) return;
-    if (!session.meta.tags.includes(t)) saveMeta({ tags: [...session.meta.tags, t] });
+    if (!metaRef.current.tags.includes(t)) saveMeta({ tags: [...metaRef.current.tags, t] });
     setTagInput("");
   };
 
@@ -170,7 +170,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
       <div className="px-5 pt-4 pb-3.5 border-b border-white/[0.06] space-y-3">
         <div className="flex items-start gap-2">
           <button
-            onClick={() => saveMeta({ favorite: !session.meta.favorite })}
+            onClick={() => saveMeta({ favorite: !metaRef.current.favorite })}
             className="mt-0.5 shrink-0"
             title="收藏"
           >
@@ -290,7 +290,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
               {t}
               <button
                 className="text-dim hover:text-red-400 leading-none"
-                onClick={() => saveMeta({ tags: session.meta.tags.filter((x) => x !== t) })}
+                onClick={() => saveMeta({ tags: metaRef.current.tags.filter((x) => x !== t) })}
               >
                 ×
               </button>
