@@ -74,55 +74,89 @@ pub fn scan_all(
         }
         let total = all_raws.len();
         let mut seen_ids: Vec<String> = Vec::new();
-        for (i, raw) in all_raws.into_iter().enumerate() {
-            stat.scanned += 1;
-            // 处理逻辑放进闭包，保证跳过/失败/成功所有分支都汇聚到
-            // 后面的统一进度上报点，而不是 continue 绕过回调
-            (|| {
-                // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
-                if !full_for_adapter {
-                    if let Some(id) = raw.identity.as_deref() {
-                        if db.stamp(adapter.id(), id) == Some((raw.size, raw.mtime_ms)) {
-                            stat.skipped += 1;
-                            return;
+
+        enum ItemResult {
+            Skipped,
+            Failed,
+            Parsed(Box<crate::models::Session>),
+        }
+
+        // 多线程并行解析：worker 只做跳过检查和昂贵 parse，
+        // 主线程串行 upsert + 统一进度上报
+        let counter = std::sync::atomic::AtomicUsize::new(0);
+        let (tx, rx) = std::sync::mpsc::channel::<ItemResult>();
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(1, 8);
+        let raws_ref = &all_raws;
+        let adapter_ref = adapter.as_ref();
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                let tx = tx.clone();
+                let counter = &counter;
+                s.spawn(move || loop {
+                    let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    let raw = &raws_ref[i];
+                    // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
+                    if !full_for_adapter {
+                        if let Some(id) = raw.identity.as_deref() {
+                            if db.stamp(adapter_ref.id(), id) == Some((raw.size, raw.mtime_ms)) {
+                                let _ = tx.send(ItemResult::Skipped);
+                                continue;
+                            }
+                        }
+                    }
+                    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        adapter_ref.parse(raw)
+                    }))
+                    .ok()
+                    .flatten();
+                    let _ = tx.send(match parsed {
+                        Some(session) => ItemResult::Parsed(Box::new(session)),
+                        None => ItemResult::Failed,
+                    });
+                });
+            }
+            drop(tx);
+            let mut done = 0usize;
+            for res in rx {
+                done += 1;
+                stat.scanned += 1;
+                match res {
+                    ItemResult::Skipped => stat.skipped += 1,
+                    ItemResult::Failed => stat.errors += 1,
+                    ItemResult::Parsed(session) => {
+                        seen_ids.push(session.session_id.clone());
+                        match db.upsert_session(&session) {
+                            Ok(_) => stat.parsed += 1,
+                            Err(e) => {
+                                eprintln!("[scan] upsert failed {}: {e}", session.session_id);
+                                stat.errors += 1;
+                            }
                         }
                     }
                 }
-                let Ok(parsed_probe) =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| adapter.parse(&raw)))
-                else {
-                    stat.errors += 1;
-                    return;
-                };
-                let Some(session) = parsed_probe else {
-                    stat.errors += 1;
-                    return;
-                };
-                seen_ids.push(session.session_id.clone());
-                match db.upsert_session(&session) {
-                    Ok(_) => stat.parsed += 1,
-                    Err(e) => {
-                        eprintln!("[scan] upsert failed {}: {e}", session.session_id);
-                        stat.errors += 1;
+                // 统一的进度上报点：所有处理分支共用
+                if let Some(p) = progress {
+                    if done % 25 == 0 || done == total {
+                        p(ScanProgress {
+                            adapter_id: adapter.id().to_string(),
+                            adapter_index: this_index,
+                            adapter_count,
+                            done,
+                            total,
+                            parsed: stat.parsed,
+                            skipped: stat.skipped,
+                            errors: stat.errors,
+                        });
                     }
                 }
-            })();
-            // 统一的进度上报点：所有处理分支共用
-            if let Some(p) = progress {
-                if (i + 1) % 25 == 0 || i + 1 == total {
-                    p(ScanProgress {
-                        adapter_id: adapter.id().to_string(),
-                        adapter_index: this_index,
-                        adapter_count,
-                        done: i + 1,
-                        total,
-                        parsed: stat.parsed,
-                        skipped: stat.skipped,
-                        errors: stat.errors,
-                    });
-                }
             }
-        }
+        });
         // prune 安全规则（全量扫描）：
         // - 有任何错误（目录遍历失败/解析失败/索引损坏/必需根目录消失）→ 不动索引
         // - 零错误但一条都没扫到 → 根目录可读但确实是空的，正常清理

@@ -11,13 +11,14 @@ interface Props {
   onPatch: (s: SessionDto) => void;
   onRemoved: (s: SessionDto) => void;
   onClose: () => void;
+  onMigrated: () => void;
   toast: (kind: Toast["kind"], text: string) => void;
 }
 
 const btn =
   "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-white/[0.04] border border-white/[0.07] text-mut hover:text-ink hover:bg-white/[0.08] transition-colors disabled:opacity-40 disabled:hover:bg-white/[0.04] disabled:hover:text-mut";
 
-export default function SessionDetail({ session, adapters, onPatch, onRemoved, onClose, toast }: Props) {
+export default function SessionDetail({ session, adapters, onPatch, onRemoved, onClose, onMigrated, toast }: Props) {
   const [tagInput, setTagInput] = useState("");
   const [note, setNote] = useState(session.meta.note);
   const [messages, setMessages] = useState<MessagePreview[] | null>(null);
@@ -272,16 +273,17 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                 if (!target) return;
                 run(async () => {
                   const r = await api.migrate(session.harness_id, session.session_id, target);
+                  onMigrated();
                   return `${r.path}\n在 ${target} 中运行：${r.resume_command}`;
                 }, "已迁移");
               }}
             >
               <option value="">迁移到…</option>
-              {["claude-code", "codex"]
+              {["claude-code", "codex", "opencode", "zcode"]
                 .filter((t) => t !== session.harness_id)
                 .map((t) => (
                   <option key={t} value={t} className="bg-zinc-900">
-                    {t === "claude-code" ? "Claude Code" : "Codex"}
+                    {t === "claude-code" ? "Claude Code" : t === "codex" ? "Codex" : t === "opencode" ? "OpenCode" : "Zcode"}
                   </option>
                 ))}
             </select>

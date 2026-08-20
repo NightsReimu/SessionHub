@@ -248,6 +248,16 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     }
 
     fn read_messages(&self, s: &Session, limit: usize) -> Vec<MessagePreview> {
+        self.read_limited(s, limit, 2000)
+    }
+
+    fn read_messages_full(&self, s: &Session) -> Option<Vec<MessagePreview>> {
+        Some(self.read_limited(s, usize::MAX, usize::MAX))
+    }
+}
+
+impl ClaudeCodeAdapter {
+    fn read_limited(&self, s: &Session, limit: usize, max_len: usize) -> Vec<MessagePreview> {
         let path = PathBuf::from(&s.raw_path);
         let mut msgs: Vec<MessagePreview> = Vec::new();
         for_each_jsonl_line(&path, |v| {
@@ -268,7 +278,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             }
             msgs.push(MessagePreview {
                 role: ty.to_string(),
-                text: truncate(&text, 2000),
+                text: truncate(&text, max_len),
                 timestamp: json_str(&v, "timestamp").and_then(parse_iso_ms),
             });
         });

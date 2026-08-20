@@ -216,6 +216,16 @@ impl HarnessAdapter for DshAdapter {
     }
 
     fn read_messages(&self, s: &Session, limit: usize) -> Vec<MessagePreview> {
+        self.read_limited(s, limit, 2000)
+    }
+
+    fn read_messages_full(&self, s: &Session) -> Option<Vec<MessagePreview>> {
+        Some(self.read_limited(s, usize::MAX, usize::MAX))
+    }
+}
+
+impl DshAdapter {
+    fn read_limited(&self, s: &Session, limit: usize, max_len: usize) -> Vec<MessagePreview> {
         use std::collections::VecDeque;
         use std::io::{BufRead, BufReader};
 
@@ -226,9 +236,9 @@ impl HarnessAdapter for DshAdapter {
         let Ok(decoder) = zstd::stream::read::Decoder::new(file) else {
             return Vec::new();
         };
-        // 流式解压 + 环形缓冲：内存占用只与 limit 相关，与文件大小无关
-        let limit = limit.max(1);
-        let mut ring: VecDeque<MessagePreview> = VecDeque::with_capacity(limit + 1);
+        // 有界时用环形缓冲：内存只与 limit 相关；无界（迁移）时全量收集
+        let bounded = limit != usize::MAX;
+        let mut ring: VecDeque<MessagePreview> = VecDeque::new();
         let reader = BufReader::with_capacity(1 << 20, decoder);
         for line in reader.lines() {
             let Ok(line) = line else { continue };
@@ -254,10 +264,10 @@ impl HarnessAdapter for DshAdapter {
             };
             ring.push_back(MessagePreview {
                 role: role.to_string(),
-                text: truncate(&text_val, 2000),
+                text: truncate(&text_val, max_len),
                 timestamp: json_i64(&v, "time"),
             });
-            if ring.len() > limit {
+            if bounded && ring.len() > limit.max(1) {
                 ring.pop_front();
             }
         }

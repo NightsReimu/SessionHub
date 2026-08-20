@@ -260,7 +260,13 @@ fn migrate_session(
     if dto.session.harness_id == target {
         return Err("源和目标 harness 相同，无需迁移".to_string());
     }
-    let messages = adapter.read_messages(&dto.session, 2000);
+    // 完整读取（不截断、不限条数）：不支持完整读取的源直接拒绝，
+    // 绝不静默迁移不完整内容
+    let Some(messages) = adapter.read_messages_full(&dto.session) else {
+        return Err("源 harness 不支持完整消息读取，无法迁移".to_string());
+    };
+    // 迁移写目标 harness 的存储区，与扫描互斥，避免 watcher 读到半成品
+    let _scan_guard = state.scan_lock.lock();
     migrate::migrate(&dto.session, &messages, &target)
 }
 

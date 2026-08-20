@@ -349,7 +349,12 @@ fn parse_row(cfg: &SqliteConfig, raw: &RawRef) -> Option<Session> {
     })
 }
 
-fn read_messages_db(db_path: &Path, session_id: &str, limit: usize) -> Vec<MessagePreview> {
+fn read_messages_db(
+    db_path: &Path,
+    session_id: &str,
+    limit: usize,
+    max_len: usize,
+) -> Vec<MessagePreview> {
     let Some(conn) = open_ro(db_path) else {
         return Vec::new();
     };
@@ -392,7 +397,7 @@ fn read_messages_db(db_path: &Path, session_id: &str, limit: usize) -> Vec<Messa
             let role = json_str(&m, "role").unwrap_or("?").to_string();
             msgs.push(MessagePreview {
                 role,
-                text: truncate(text, 2000),
+                text: truncate(text, max_len),
                 timestamp: Some(ts),
             });
         }
@@ -446,7 +451,15 @@ macro_rules! sqlite_adapter {
                 }
             }
             fn read_messages(&self, s: &Session, limit: usize) -> Vec<MessagePreview> {
-                read_messages_db(Path::new(&s.raw_path), &s.session_id, limit)
+                read_messages_db(Path::new(&s.raw_path), &s.session_id, limit, 2000)
+            }
+            fn read_messages_full(&self, s: &Session) -> Option<Vec<MessagePreview>> {
+                Some(read_messages_db(
+                    Path::new(&s.raw_path),
+                    &s.session_id,
+                    usize::MAX,
+                    usize::MAX,
+                ))
             }
         }
     };

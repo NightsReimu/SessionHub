@@ -136,6 +136,17 @@ export default function App() {
     }
   };
 
+  // 静默增量重扫（迁移后调用）：不弹 toast、不动进度条
+  const quietRescan = useCallback(async () => {
+    try {
+      await api.scan(false);
+      await refreshCounts();
+      await refreshList();
+    } catch (e) {
+      console.error(e);
+    }
+  }, [refreshCounts, refreshList]);
+
   const openStats = async () => {
     try {
       setStats(await api.getStats());
@@ -253,6 +264,7 @@ export default function App() {
               onPatch={patchSelected}
               onRemoved={removeFromList}
               onClose={() => setSelected(null)}
+              onMigrated={quietRescan}
               toast={toast}
             />
           ) : (

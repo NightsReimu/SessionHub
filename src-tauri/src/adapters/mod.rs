@@ -66,6 +66,11 @@ pub trait HarnessAdapter: Send + Sync {
     fn read_messages(&self, _s: &Session, _limit: usize) -> Vec<MessagePreview> {
         Vec::new()
     }
+    /// 完整消息读取（不截断、不限条数），供会话迁移使用。
+    /// 默认 None → 迁移拒绝该源，绝不静默迁移不完整内容
+    fn read_messages_full(&self, _s: &Session) -> Option<Vec<MessagePreview>> {
+        None
+    }
 }
 
 pub fn all_adapters() -> Vec<Box<dyn HarnessAdapter>> {
