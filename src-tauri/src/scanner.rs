@@ -31,7 +31,9 @@ pub fn scan_all(
         }
         let mut seen_ids: Vec<String> = Vec::new();
         for root in adapter.roots(ctx) {
-            for raw in adapter.enumerate(&root, ctx) {
+            let (raws, enum_errors) = adapter.enumerate(&root, ctx);
+            stat.errors += enum_errors;
+            for raw in raws {
                 stat.scanned += 1;
                 // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
                 if !full {
@@ -62,10 +64,12 @@ pub fn scan_all(
                 }
             }
         }
-        // 全量扫描的 prune 安全措施：
-        // 1) 有任何解析错误（文件写入中/权限问题/索引 JSON 短暂损坏）时不动索引
-        // 2) 什么都没扫到时无法区分“全被删了”和“根目录暂时不可读”，也不动索引
-        if full && stat.errors == 0 && stat.scanned > 0 {
+        // prune 安全规则（全量扫描）：
+        // - 有任何错误（目录遍历失败/解析失败/索引损坏）→ 不动索引，
+        //   “目录暂时不可读”绝不能被当成“会话全被删了”
+        // - 零错误但一条都没扫到 → 根目录可读但确实是空的，
+        //   说明源文件真被删完了，正常清理索引
+        if full && stat.errors == 0 {
             let _ = db.prune_not_in(adapter.id(), &seen_ids);
         }
         stats.push(stat);
@@ -83,6 +87,139 @@ pub fn scan_all(
 mod tests {
     use super::*;
     use crate::adapters::all_adapters;
+    use crate::models::{Capabilities, RawRef, ResumeSpec, Session};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    fn temp_db(tag: &str) -> (Db, PathBuf) {
+        let p = std::env::temp_dir().join(format!("sessionhub-ut-{}-{}.db", tag, std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        (Db::open(&p).unwrap(), p)
+    }
+
+    fn cleanup_db(p: &PathBuf) {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(p.with_extension("db-wal"));
+        let _ = std::fs::remove_file(p.with_extension("db-shm"));
+    }
+
+    #[derive(Default)]
+    struct MockShared {
+        raws: StdMutex<Vec<RawRef>>,
+        errors: StdMutex<usize>,
+        fail_parse: StdMutex<Vec<String>>,
+    }
+
+    struct MockAdapter {
+        shared: Arc<MockShared>,
+    }
+
+    fn mock_set(shared: &MockShared, ids: &[&str], errors: usize, fail: &[&str]) {
+        *shared.raws.lock().unwrap() = ids
+            .iter()
+            .map(|id| RawRef {
+                path: PathBuf::from(format!("/mock/{id}.jsonl")),
+                size: 1,
+                mtime_ms: 1,
+                inline: None,
+                identity: Some(id.to_string()),
+            })
+            .collect();
+        *shared.errors.lock().unwrap() = errors;
+        *shared.fail_parse.lock().unwrap() = fail.iter().map(|s| s.to_string()).collect();
+    }
+
+    impl HarnessAdapter for MockAdapter {
+        fn id(&self) -> &'static str {
+            "mock"
+        }
+        fn name(&self) -> &'static str {
+            "Mock"
+        }
+        fn detect(&self, _ctx: &DetectCtx) -> bool {
+            true
+        }
+        fn roots(&self, _ctx: &DetectCtx) -> Vec<PathBuf> {
+            vec![PathBuf::from("/mock")]
+        }
+        fn enumerate(&self, _root: &std::path::Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
+            (
+                self.shared.raws.lock().unwrap().clone(),
+                *self.shared.errors.lock().unwrap(),
+            )
+        }
+        fn parse(&self, raw: &RawRef) -> Option<Session> {
+            let id = raw.identity.clone()?;
+            if self.shared.fail_parse.lock().unwrap().contains(&id) {
+                return None;
+            }
+            Some(Session {
+                session_id: id.clone(),
+                harness_id: "mock".to_string(),
+                project_path: "/mock".to_string(),
+                title: id,
+                started_at: Some(1),
+                ended_at: Some(1),
+                message_count: None,
+                tokens_in: None,
+                tokens_out: None,
+                cost_usd: None,
+                status: "idle".to_string(),
+                raw_path: raw.path.to_string_lossy().into_owned(),
+                source_format: "mock".to_string(),
+                file_size: raw.size,
+                file_mtime: raw.mtime_ms,
+            })
+        }
+        fn resume_spec(&self, _s: &Session) -> Option<ResumeSpec> {
+            None
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
+    }
+
+    /// prune 安全矩阵：真删→清理；目录不可读/解析失败→保留；目录可读但空→清理
+    #[test]
+    fn full_scan_prune_matrix() {
+        let (db, path) = temp_db("prune");
+        let shared = Arc::new(MockShared::default());
+        let adapters: Vec<Box<dyn HarnessAdapter>> =
+            vec![Box::new(MockAdapter { shared: shared.clone() })];
+        let ctx = DetectCtx::new();
+
+        // 初始：a、b 入库
+        mock_set(&shared, &["a", "b"], 0, &[]);
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 2);
+
+        // b 的源文件真被删了 → prune 掉 b
+        mock_set(&shared, &["a"], 0, &[]);
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 1);
+        assert!(db.get_session("mock", "b").is_none());
+
+        // 目录遍历失败 → 即使扫到 a，也绝不动索引
+        mock_set(&shared, &["a"], 1, &[]);
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 1);
+
+        // b 回来了但解析失败（文件写入中/损坏）→ 旧索引必须保留
+        mock_set(&shared, &["a", "b"], 0, &[]);
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 2);
+        mock_set(&shared, &["a", "b"], 0, &["b"]);
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 2, "解析失败时不得 prune");
+        assert!(db.get_session("mock", "b").is_some());
+
+        // 目录可读但确实空了 → 正常清理
+        mock_set(&shared, &[], 0, &[]);
+        scan_all(&db, &adapters, &ctx, true);
+        assert_eq!(db.counts().unwrap().total, 0, "源文件全删后应清理索引");
+
+        cleanup_db(&path);
+    }
 
     /// 对本机真实 harness 目录做只读冒烟扫描，验证各 adapter 解析与入库。
     /// 依赖开发者机器上实际装有 harness 会话，默认跳过：

@@ -114,22 +114,28 @@ pub fn derive_status(mtime_ms: i64) -> String {
     }
 }
 
-/// 递归收集目录下匹配扩展名的文件
-pub fn collect_files(root: &Path, exts: &[&str]) -> Vec<PathBuf> {
+/// 递归收集目录下匹配扩展名的文件。
+/// 返回 (文件列表, 错误数)：根目录不存在或遍历失败都计入错误数，
+/// 让扫描器能区分“源文件真的全删了”和“目录暂时不可读”。
+pub fn collect_files(root: &Path, exts: &[&str]) -> (Vec<PathBuf>, usize) {
     let mut out = Vec::new();
+    let mut errors = 0usize;
     if !root.exists() {
-        return out;
+        return (out, 1);
     }
     for entry in walkdir::WalkDir::new(root).follow_links(false) {
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if exts.iter().any(|e| name.ends_with(e)) {
-            out.push(path.to_path_buf());
+        match entry {
+            Ok(e) => {
+                if !e.file_type().is_file() {
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy();
+                if exts.iter().any(|x| name.ends_with(x)) {
+                    out.push(e.path().to_path_buf());
+                }
+            }
+            Err(_) => errors += 1,
         }
     }
-    out
+    (out, errors)
 }

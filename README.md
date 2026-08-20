@@ -108,13 +108,13 @@ git tag v0.1.0 && git push origin v0.1.0
 - macOS：本地 ad-hoc 签名即可运行；分发 `.dmg` 时用户需在「系统设置 → 安全性」放行
 - Windows：无证书会触发 SmartScreen，建议先发 zip 版
 
-### 解析器冒烟测试（只读，安全）
+### 测试
 
 ```bash
-cd src-tauri && cargo test scan_real_machine_smoke -- --nocapture
+cd src-tauri
+cargo test                     # 默认：prune 安全矩阵 / WAL 扫描戳 / DSH raw 防护 / 流式解析等单元回归测试
+cargo test scan_real_machine_smoke -- --ignored --nocapture   # 可选：对本机真实 harness 目录的只读冒烟扫描
 ```
-
-对本机真实 harness 目录做只读扫描，输出每个 adapter 的解析统计。
 
 ## Roadmap
 

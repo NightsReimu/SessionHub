@@ -59,10 +59,14 @@ fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> Vec<RawRef> {
-    let Some(conn) = open_ro(db_path) else { return Vec::new() };
+fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
+    let mut errors = 0usize;
+    let Some(conn) = open_ro(db_path) else {
+        return (Vec::new(), 1);
+    };
     if !table_exists(&conn, "session") {
-        return Vec::new();
+        // schema 对不上：无法区分“格式变了”和“被清空”，按错误处理防止误清索引
+        return (Vec::new(), 1);
     }
     let cols = columns_of(&conn, "session");
     let has = |c: &str| cols.iter().any(|x| x == c);
@@ -73,7 +77,7 @@ fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> Vec<RawRef> {
     ];
     let selected: Vec<&str> = wanted.into_iter().filter(|c| has(c)).collect();
     if !selected.contains(&"id") {
-        return Vec::new();
+        return (Vec::new(), 1);
     }
     let sql = format!("SELECT {} FROM session", selected.join(", "));
 
@@ -111,44 +115,57 @@ fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> Vec<RawRef> {
     size += wal_size;
     mtime = mtime.max(wal_mtime);
 
-    if let Ok(mut stmt) = conn.prepare(&sql) {
-        let col_names: Vec<String> = selected.iter().map(|s| s.to_string()).collect();
-        if let Ok(rows) = stmt.query_map([], |row| {
-            let mut map = serde_json::Map::new();
-            for (i, name) in col_names.iter().enumerate() {
-                let v = row.get_ref(i)?;
-                let jv = match v {
-                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                    rusqlite::types::ValueRef::Integer(n) => serde_json::Value::from(n),
-                    rusqlite::types::ValueRef::Real(f) => serde_json::Value::from(f),
-                    rusqlite::types::ValueRef::Text(t) => {
-                        serde_json::Value::from(String::from_utf8_lossy(t).into_owned())
-                    }
-                    rusqlite::types::ValueRef::Blob(_) => serde_json::Value::Null,
-                };
-                map.insert(name.clone(), jv);
-            }
-            Ok(serde_json::Value::Object(map))
-        }) {
-            for row in rows.flatten() {
-                let mut row = row;
-                let identity = json_str(&row, "id").map(|s| s.to_string());
-                if let Some(id) = identity.as_deref() {
-                    if let Some(c) = counts.get(id) {
-                        row.as_object_mut().map(|m| m.insert("message_count".into(), (*c).into()));
+    match conn.prepare(&sql) {
+        Ok(mut stmt) => {
+            let col_names: Vec<String> = selected.iter().map(|s| s.to_string()).collect();
+            match stmt.query_map([], |row| {
+                let mut map = serde_json::Map::new();
+                for (i, name) in col_names.iter().enumerate() {
+                    let v = row.get_ref(i)?;
+                    let jv = match v {
+                        rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                        rusqlite::types::ValueRef::Integer(n) => serde_json::Value::from(n),
+                        rusqlite::types::ValueRef::Real(f) => serde_json::Value::from(f),
+                        rusqlite::types::ValueRef::Text(t) => {
+                            serde_json::Value::from(String::from_utf8_lossy(t).into_owned())
+                        }
+                        rusqlite::types::ValueRef::Blob(_) => serde_json::Value::Null,
+                    };
+                    map.insert(name.clone(), jv);
+                }
+                Ok(serde_json::Value::Object(map))
+            }) {
+                Ok(rows) => {
+                    for row in rows {
+                        match row {
+                            Ok(row) => {
+                                let mut row = row;
+                                let identity = json_str(&row, "id").map(|s| s.to_string());
+                                if let Some(id) = identity.as_deref() {
+                                    if let Some(c) = counts.get(id) {
+                                        row.as_object_mut().map(|m| {
+                                            m.insert("message_count".into(), (*c).into())
+                                        });
+                                    }
+                                }
+                                out.push(RawRef {
+                                    path: db_path.to_path_buf(),
+                                    size,
+                                    mtime_ms: mtime,
+                                    inline: Some(row),
+                                    identity,
+                                });
+                            }
+                            Err(_) => errors += 1,
+                        }
                     }
                 }
-                out.push(RawRef {
-                    path: db_path.to_path_buf(),
-                    size,
-                    mtime_ms: mtime,
-                    inline: Some(row),
-                    identity,
-                });
+                Err(_) => errors += 1,
             }
         }
+        Err(_) => errors += 1,
     }
-    out
+    (out, errors)
 }
 
 fn parse_row(cfg: &SqliteConfig, raw: &RawRef) -> Option<Session> {
@@ -247,7 +264,7 @@ macro_rules! sqlite_adapter {
             fn roots(&self, ctx: &DetectCtx) -> Vec<PathBuf> {
                 vec![ctx.join($cfg.db_rel)]
             }
-            fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> Vec<RawRef> {
+            fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
                 enumerate_db(&$cfg, root)
             }
             fn parse(&self, raw: &RawRef) -> Option<Session> {
@@ -276,3 +293,61 @@ macro_rules! sqlite_adapter {
 
 sqlite_adapter!(OpenCodeAdapter, OPENCODE);
 sqlite_adapter!(ZcodeAdapter, ZCODE);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WAL 感知：只写 .db-wal（主 .db 的 size/mtime 不变）也必须改变扫描戳
+    #[test]
+    fn wal_changes_scan_stamp() {
+        let dir = std::env::temp_dir().join(format!("sh-wal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dbp = dir.join("opencode.db");
+        {
+            let conn = Connection::open(&dbp).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE session(
+                    id text primary key, directory text not null default '',
+                    title text not null default '',
+                    time_created integer not null default 0,
+                    time_updated integer not null default 0);
+                 INSERT INTO session(id, title) VALUES ('s1', 't1');",
+            )
+            .unwrap();
+        }
+        let (raws, errs) = enumerate_db(&OPENCODE, &dbp);
+        assert_eq!(errs, 0);
+        assert_eq!(raws.len(), 1);
+        let base_size = raws[0].size;
+        let base_mtime = raws[0].mtime_ms;
+
+        // 模拟 SQLite WAL：写入只落在 wal 文件
+        let walp = dir.join("opencode.db-wal");
+        std::fs::write(&walp, vec![7u8; 4096]).unwrap();
+        let wal_mtime = std::fs::metadata(&walp)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let (raws2, errs2) = enumerate_db(&OPENCODE, &dbp);
+        assert_eq!(errs2, 0);
+        assert_eq!(raws2[0].size, base_size + 4096, "扫描戳必须包含 wal 大小");
+        assert!(
+            raws2[0].mtime_ms >= wal_mtime.max(base_mtime),
+            "扫描戳 mtime 必须反映 wal 的更新时间"
+        );
+
+        // 基本解析仍正常
+        let adapter = OpenCodeAdapter;
+        let s = adapter.parse(&raws2[0]).unwrap();
+        assert_eq!(s.session_id, "s1");
+        assert_eq!(s.title, "t1");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

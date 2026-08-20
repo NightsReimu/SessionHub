@@ -17,14 +17,34 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, t
   const [messages, setMessages] = useState<MessagePreview[] | null>(null);
   const [busy, setBusy] = useState(false);
   const noteTimer = useRef<number | null>(null);
+  const noteRef = useRef(session.meta.note);
 
   const adapter = adapters.find((a) => a.id === session.harness_id);
   const caps = adapter?.capabilities;
 
   useEffect(() => {
     setNote(session.meta.note);
+    noteRef.current = session.meta.note;
     setTagInput("");
     setMessages(null);
+    const harnessId = session.harness_id;
+    const sessionId = session.session_id;
+    const lastSavedNote = session.meta.note;
+    const tags = session.meta.tags;
+    const favorite = session.meta.favorite;
+    return () => {
+      // 切换会话：取消防抖定时器（它捕获的是旧会话，触发会让面板跳回去），
+      // 并把还没落盘的备注直接写库——不走 onPatch，避免选中项被切回旧会话
+      if (noteTimer.current) {
+        window.clearTimeout(noteTimer.current);
+        noteTimer.current = null;
+      }
+      if (noteRef.current !== lastSavedNote) {
+        api
+          .setMeta(harnessId, sessionId, { tags, note: noteRef.current, favorite })
+          .catch((e) => console.error("切换时保存备注失败", e));
+      }
+    };
   }, [session.harness_id, session.session_id]);
 
   const saveMeta = async (patch: Partial<SessionDto["meta"]>) => {
@@ -40,6 +60,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, t
 
   const onNoteChange = (v: string) => {
     setNote(v);
+    noteRef.current = v;
     if (noteTimer.current) window.clearTimeout(noteTimer.current);
     noteTimer.current = window.setTimeout(() => saveMeta({ note: v }), 600);
   };

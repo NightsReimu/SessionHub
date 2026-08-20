@@ -364,3 +364,88 @@ impl Db {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Session, SessionMeta};
+
+    fn stub_session(harness: &str, id: &str) -> Session {
+        Session {
+            session_id: id.to_string(),
+            harness_id: harness.to_string(),
+            project_path: "/tmp/p".to_string(),
+            title: format!("title-{id}"),
+            started_at: Some(1),
+            ended_at: Some(2),
+            message_count: Some(1),
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            status: "idle".to_string(),
+            raw_path: format!("/tmp/{id}.jsonl"),
+            source_format: "test".to_string(),
+            file_size: 10,
+            file_mtime: 20,
+        }
+    }
+
+    fn temp_db(tag: &str) -> (Db, std::path::PathBuf) {
+        let p = std::env::temp_dir().join(format!("sessionhub-ut-db-{}-{}.db", tag, std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        (Db::open(&p).unwrap(), p)
+    }
+
+    fn cleanup(p: &std::path::PathBuf) {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(p.with_extension("db-wal"));
+        let _ = std::fs::remove_file(p.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn upsert_and_stamp_roundtrip() {
+        let (db, path) = temp_db("stamp");
+        let s = stub_session("h", "s1");
+        assert_eq!(db.stamp("h", "s1"), None);
+        db.upsert_session(&s).unwrap();
+        assert_eq!(db.stamp("h", "s1"), Some((10, 20)));
+        let mut s2 = s.clone();
+        s2.file_mtime = 21;
+        db.upsert_session(&s2).unwrap();
+        assert_eq!(db.stamp("h", "s1"), Some((10, 21)));
+        cleanup(&path);
+    }
+
+    /// 收藏计数不得统计已删除会话遗留的孤立 meta
+    #[test]
+    fn favorites_ignore_orphan_meta() {
+        let (db, path) = temp_db("fav");
+        db.upsert_session(&stub_session("h", "s1")).unwrap();
+        db.set_meta(
+            "h",
+            "s1",
+            &SessionMeta {
+                tags: vec![],
+                note: String::new(),
+                favorite: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(db.counts().unwrap().favorites, 1);
+
+        db.delete_session_row("h", "s1").unwrap();
+        assert_eq!(db.counts().unwrap().favorites, 0, "删除会话后孤立 meta 不应计入收藏");
+        assert!(db.list_sessions(None, true, 10, 0).unwrap().is_empty());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn search_falls_back_or_fts_works() {
+        let (db, path) = temp_db("search");
+        db.upsert_session(&stub_session("h", "s1")).unwrap();
+        let hits = db.search("title-s1", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(db.search("不存在的词xyz", 10).unwrap().is_empty());
+        cleanup(&path);
+    }
+}

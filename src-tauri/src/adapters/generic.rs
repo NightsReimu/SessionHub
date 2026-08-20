@@ -64,8 +64,8 @@ impl HarnessAdapter for PlaceholderAdapter {
             .filter(|p| p.is_dir())
             .collect()
     }
-    fn enumerate(&self, _root: &Path, _ctx: &DetectCtx) -> Vec<RawRef> {
-        Vec::new() // 格式待确认，由 GenericAdapter 兜底
+    fn enumerate(&self, _root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
+        (Vec::new(), 0) // 格式待确认，由 GenericAdapter 兜底
     }
     fn parse(&self, _raw: &RawRef) -> Option<Session> {
         None
@@ -109,11 +109,16 @@ impl HarnessAdapter for GenericAdapter {
     fn roots(&self, ctx: &DetectCtx) -> Vec<PathBuf> {
         Self::candidate_roots(ctx)
     }
-    fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> Vec<RawRef> {
-        collect_files(root, &[".jsonl", ".json"])
-            .into_iter()
-            .filter_map(|p| file_raw_ref(&p))
-            .collect()
+    fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
+        let (files, mut errors) = collect_files(root, &[".jsonl", ".json"]);
+        let mut out = Vec::new();
+        for p in files {
+            match file_raw_ref(&p) {
+                Some(raw) => out.push(raw),
+                None => errors += 1,
+            }
+        }
+        (out, errors)
     }
     fn parse(&self, raw: &RawRef) -> Option<Session> {
         // 启发式：尝试从文件头几行/顶层字段找 id、cwd、title；找不到就用文件名和 mtime

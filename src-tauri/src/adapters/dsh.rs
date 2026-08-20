@@ -50,19 +50,19 @@ impl HarnessAdapter for DshAdapter {
         vec![ctx.join(".dsh/storages/session_projcache.json")]
     }
 
-    fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> Vec<RawRef> {
+    fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
         let Ok(text) = std::fs::read_to_string(root) else {
-            return Vec::new();
+            return (Vec::new(), 1);
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return Vec::new();
+            return (Vec::new(), 1);
         };
         let Some(sessions) = v
             .get("tables")
             .and_then(|t| t.get("sessions"))
             .and_then(|s| s.as_object())
         else {
-            return Vec::new();
+            return (Vec::new(), 1);
         };
         let dirs = Self::session_dirs(ctx);
         let (size, mtime) = std::fs::metadata(root)
@@ -78,7 +78,7 @@ impl HarnessAdapter for DshAdapter {
             })
             .unwrap_or((0, 0));
 
-        sessions
+        let raws = sessions
             .iter()
             .map(|(key, value)| {
                 // 目录名可能是 "session-<uuid>" 也可能是裸 "<uuid>"
@@ -98,7 +98,8 @@ impl HarnessAdapter for DshAdapter {
                     })),
                 }
             })
-            .collect()
+            .collect();
+        (raws, 0)
     }
 
     fn parse(&self, raw: &RawRef) -> Option<Session> {
@@ -178,9 +179,9 @@ impl HarnessAdapter for DshAdapter {
         }
     }
 
-    /// raw_path 回退到全局 session_projcache.json 时禁止删除，
-    /// 否则会把整个 DSH 会话索引移入回收站
-    fn can_delete_session(&self, s: &Session) -> bool {
+    /// 会话目录缺失时 raw_path 会回退到全局 session_projcache.json，
+    /// 此时删除/备份/定位都会误伤整个 DSH 索引，一律禁止
+    fn can_use_raw_path(&self, s: &Session) -> bool {
         !s.raw_path.ends_with("session_projcache.json")
     }
 
@@ -227,5 +228,44 @@ impl HarnessAdapter for DshAdapter {
             }
         }
         ring.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Session;
+
+    fn stub(raw_path: &str) -> Session {
+        Session {
+            session_id: "session-x".to_string(),
+            harness_id: "dsh".to_string(),
+            project_path: "/tmp/p".to_string(),
+            title: String::new(),
+            started_at: None,
+            ended_at: None,
+            message_count: None,
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            status: "idle".to_string(),
+            raw_path: raw_path.to_string(),
+            source_format: "dsh-projcache".to_string(),
+            file_size: 0,
+            file_mtime: 0,
+        }
+    }
+
+    /// raw_path 回退到全局索引文件时，删除/备份/定位全部禁止
+    #[test]
+    fn raw_path_guard_blocks_projcache_fallback() {
+        let a = DshAdapter;
+        let fallback = stub("/Users/x/.dsh/storages/session_projcache.json");
+        assert!(!a.can_use_raw_path(&fallback));
+        assert!(!a.can_delete_session(&fallback));
+
+        let normal = stub("/Users/x/.dsh/sessions/--proj--/session-x");
+        assert!(a.can_use_raw_path(&normal));
+        assert!(a.can_delete_session(&normal));
     }
 }

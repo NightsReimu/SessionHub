@@ -43,29 +43,56 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         vec![ctx.join(".claude/projects")]
     }
 
-    fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> Vec<RawRef> {
+    fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
         let mut out = Vec::new();
-        let Ok(dirs) = std::fs::read_dir(root) else { return out };
-        for dir in dirs.flatten() {
+        let mut errors = 0usize;
+        let dirs = match std::fs::read_dir(root) {
+            Ok(d) => d,
+            Err(_) => return (out, 1),
+        };
+        for dir in dirs {
+            let dir = match dir {
+                Ok(d) => d,
+                Err(_) => {
+                    errors += 1;
+                    continue;
+                }
+            };
             let project_dir = dir.path();
             if !project_dir.is_dir() {
                 continue;
             }
             let index = Self::read_index(&project_dir);
-            let Ok(files) = std::fs::read_dir(&project_dir) else { continue };
-            for f in files.flatten() {
+            let files = match std::fs::read_dir(&project_dir) {
+                Ok(f) => f,
+                Err(_) => {
+                    errors += 1;
+                    continue;
+                }
+            };
+            for f in files {
+                let f = match f {
+                    Ok(f) => f,
+                    Err(_) => {
+                        errors += 1;
+                        continue;
+                    }
+                };
                 let path = f.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                     continue;
                 }
-                if let Some(mut raw) = file_raw_ref(&path) {
-                    let key = path.to_string_lossy().into_owned();
-                    raw.inline = index.get(&key).cloned();
-                    out.push(raw);
+                match file_raw_ref(&path) {
+                    Some(mut raw) => {
+                        let key = path.to_string_lossy().into_owned();
+                        raw.inline = index.get(&key).cloned();
+                        out.push(raw);
+                    }
+                    None => errors += 1,
                 }
             }
         }
-        out
+        (out, errors)
     }
 
     fn parse(&self, raw: &RawRef) -> Option<Session> {
@@ -244,5 +271,43 @@ pub fn non_empty(s: &str) -> Option<String> {
         None
     } else {
         Some(s.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 流式解析：坏行跳过、title 取首条用户文本、token 累加、时间取首尾
+    #[test]
+    fn parses_streaming_jsonl() {
+        let p = std::env::temp_dir().join(format!("sh-claude-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &p,
+            concat!(
+                r#"{"type":"queue-operation","timestamp":"2026-01-01T00:00:00.000Z","sessionId":"sid-1"}"#,
+                "\n",
+                r#"{"type":"user","cwd":"/tmp/proj","timestamp":"2026-01-01T00:00:01.000Z","sessionId":"sid-1","message":{"role":"user","content":[{"type":"text","text":"hello world"}]}}"#,
+                "\n",
+                "这不是 JSON，必须被跳过\n",
+                r#"{"type":"assistant","timestamp":"2026-01-01T00:00:02.000Z","sessionId":"sid-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":90}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let raw = file_raw_ref(&p).unwrap();
+        let a = ClaudeCodeAdapter;
+        let s = a.parse(&raw).unwrap();
+        assert_eq!(s.session_id, "sid-1");
+        assert_eq!(s.project_path, "/tmp/proj");
+        assert_eq!(s.title, "hello world");
+        assert_eq!(s.message_count, Some(2));
+        assert_eq!(s.tokens_in, Some(100));
+        assert_eq!(s.tokens_out, Some(5));
+        assert!(s.started_at.is_some());
+        assert!(s.ended_at >= s.started_at);
+        let msgs = a.read_messages(&s, 10);
+        assert_eq!(msgs.len(), 2);
+        let _ = std::fs::remove_file(&p);
     }
 }

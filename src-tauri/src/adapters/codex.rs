@@ -65,25 +65,31 @@ impl HarnessAdapter for CodexAdapter {
         vec![ctx.join(".codex/sessions"), ctx.join(".codex/archived_sessions")]
     }
 
-    fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> Vec<RawRef> {
-        collect_files(root, &[".jsonl"])
-            .into_iter()
-            .filter(|p| {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().starts_with("rollout-"))
-                    .unwrap_or(false)
-            })
-            .filter_map(|p| {
-                let mut raw = file_raw_ref(&p)?;
-                // rollout-<19字符时间戳>-<uuid> → 取 uuid 作为 identity
-                raw.identity = file_stem(&p)
-                    .strip_prefix("rollout-")
-                    .and_then(|s| s.get(20..))
-                    .map(|s| s.to_string())
-                    .or_else(|| Some(file_stem(&p)));
-                Some(raw)
-            })
-            .collect()
+    fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
+        let (files, mut errors) = collect_files(root, &[".jsonl"]);
+        let mut out = Vec::new();
+        for p in files {
+            let is_rollout = p
+                .file_name()
+                .map(|n| n.to_string_lossy().starts_with("rollout-"))
+                .unwrap_or(false);
+            if !is_rollout {
+                continue;
+            }
+            match file_raw_ref(&p) {
+                Some(mut raw) => {
+                    // rollout-<19字符时间戳>-<uuid> → 取 uuid 作为 identity
+                    raw.identity = file_stem(&p)
+                        .strip_prefix("rollout-")
+                        .and_then(|s| s.get(20..))
+                        .map(|s| s.to_string())
+                        .or_else(|| Some(file_stem(&p)));
+                    out.push(raw);
+                }
+                None => errors += 1,
+            }
+        }
+        (out, errors)
     }
 
     fn parse(&self, raw: &RawRef) -> Option<Session> {

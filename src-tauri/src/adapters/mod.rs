@@ -32,18 +32,25 @@ pub trait HarnessAdapter: Send + Sync {
     fn detect(&self, ctx: &DetectCtx) -> bool;
     /// 扫描根目录
     fn roots(&self, ctx: &DetectCtx) -> Vec<PathBuf>;
-    /// 枚举根目录下的原始对象
-    fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> Vec<RawRef>;
+    /// 枚举根目录下的原始对象。
+    /// 返回 (对象列表, 错误数)：目录遍历/读取失败必须计入错误数，
+    /// 扫描器据此决定全量扫描后是否安全清理索引——
+    /// 静默跳过会让“目录暂时不可读”被误判成“会话全被删了”。
+    fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> (Vec<RawRef>, usize);
     /// 归一化（容错：解析失败返回 None，不 panic）
     fn parse(&self, raw: &RawRef) -> Option<Session>;
     /// 续接命令；None 表示不支持
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec>;
     fn capabilities(&self) -> Capabilities;
-    /// 会话级删除许可：默认跟随 capabilities，adapter 可按会话覆盖
-    /// （例如 DSH 在会话目录缺失时 raw_path 回退到全局索引文件，此时禁止删除）
-    fn can_delete_session(&self, s: &Session) -> bool {
+    /// raw_path 是否指向该会话的独立存储（删除/备份/定位前必须检查）。
+    /// 为 false 说明 raw_path 回退到了共享/全局文件，操作会误伤其它会话。
+    fn can_use_raw_path(&self, s: &Session) -> bool {
         let _ = s;
-        self.capabilities().can_delete
+        true
+    }
+    /// 会话级删除许可：capabilities 允许 且 raw_path 指向独立存储
+    fn can_delete_session(&self, s: &Session) -> bool {
+        self.capabilities().can_delete && self.can_use_raw_path(s)
     }
     /// 读取消息预览（用于详情面板和导出），不支持则返回空
     fn read_messages(&self, _s: &Session, _limit: usize) -> Vec<MessagePreview> {

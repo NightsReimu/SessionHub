@@ -21,6 +21,27 @@ impl AppState {
     fn adapter(&self, id: &str) -> Option<&(dyn HarnessAdapter + 'static)> {
         self.adapters.iter().find(|a| a.id() == id).map(|a| a.as_ref())
     }
+
+    /// 删除/备份/定位共用的前置检查：会话存在 + raw_path 指向独立存储
+    fn session_with_usable_raw(
+        &self,
+        harness_id: &str,
+        session_id: &str,
+    ) -> Result<SessionDto, String> {
+        let dto = self
+            .db
+            .get_session(harness_id, session_id)
+            .ok_or_else(|| "会话不在索引中".to_string())?;
+        let adapter = self
+            .adapter(harness_id)
+            .ok_or_else(|| format!("未知 harness：{harness_id}"))?;
+        if !adapter.can_use_raw_path(&dto.session) {
+            return Err(
+                "该会话的独立存储目录不存在，raw 指向共享/全局文件，此操作已阻止".to_string()
+            );
+        }
+        Ok(dto)
+    }
 }
 
 #[tauri::command]
@@ -138,10 +159,7 @@ fn backup_session(
     harness_id: String,
     session_id: String,
 ) -> Result<String, String> {
-    let dto = state
-        .db
-        .get_session(&harness_id, &session_id)
-        .ok_or_else(|| "会话不在索引中".to_string())?;
+    let dto = state.session_with_usable_raw(&harness_id, &session_id)?;
     let dest = actions::backup_raw(&dto.session)?;
     Ok(dest.to_string_lossy().into_owned())
 }
@@ -171,10 +189,7 @@ fn reveal_raw(
     harness_id: String,
     session_id: String,
 ) -> Result<String, String> {
-    let dto = state
-        .db
-        .get_session(&harness_id, &session_id)
-        .ok_or_else(|| "会话不在索引中".to_string())?;
+    let dto = state.session_with_usable_raw(&harness_id, &session_id)?;
     actions::reveal_raw(&dto.session)?;
     Ok(dto.session.raw_path.clone())
 }
