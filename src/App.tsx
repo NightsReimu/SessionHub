@@ -155,7 +155,9 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-full gap-2.5 p-2.5 bg-zinc-950">
+    <div className="relative flex h-full gap-2.5 p-2.5 bg-page">
+      {/* 顶部微光晕，打破纯平背景 */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(55%_100%_at_50%_0%,rgba(232,163,61,0.06),transparent)]" />
       <Sidebar
         adapters={adapters}
         counts={counts}
@@ -171,20 +173,20 @@ export default function App() {
       />
 
       <div className="flex-1 flex flex-col gap-2.5 min-w-0">
-        <div className="flex items-center gap-2.5 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 px-3.5 py-2.5">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 text-zinc-500 shrink-0">
+        <div className="flex items-center gap-2.5 rounded-xl border border-line bg-panel px-3.5 py-2.5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 text-dim shrink-0">
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m1.6-4.4a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
           <input
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             placeholder="搜索标题 / 项目路径 / 标签 / 备注…"
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-zinc-600"
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-dim text-ink"
           />
           <button
             onClick={() => runScan(false)}
             disabled={scanning}
-            className="px-3.5 py-1.5 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
+            className="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-accent text-black hover:bg-accent-strong transition-colors disabled:opacity-50"
           >
             {scanning ? "扫描中…" : "扫描"}
           </button>
@@ -192,31 +194,31 @@ export default function App() {
             onClick={() => runScan(true)}
             disabled={scanning}
             title="重新解析所有会话文件"
-            className="px-3.5 py-1.5 text-xs rounded-xl bg-zinc-800/70 hover:bg-zinc-700/70 text-zinc-300 transition-colors disabled:opacity-50"
+            className="px-3.5 py-1.5 text-xs rounded-lg border border-line text-mut hover:text-ink hover:bg-raise transition-colors disabled:opacity-50"
           >
             全量重扫
           </button>
         </div>
 
         {progress && (
-          <div className="rounded-2xl border border-zinc-800/60 bg-zinc-900/40 px-4 py-2.5">
-            <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1.5">
+          <div className="rounded-xl border border-line bg-panel px-4 py-2.5">
+            <div className="flex items-center justify-between text-[11px] text-mut mb-1.5">
               <span>
-                正在扫描 <span className="text-zinc-200">{progress.adapter_id}</span>
-                <span className="text-zinc-600">
+                正在扫描 <span className="text-ink">{progress.adapter_id}</span>
+                <span className="text-dim">
                   （{progress.adapter_index + 1}/{progress.adapter_count}）
                 </span>
               </span>
-              <span className="text-zinc-500">
+              <span className="text-dim">
                 {progress.total > 0
                   ? `${progress.done}/${progress.total} · 解析 ${progress.parsed} · 跳过 ${progress.skipped}`
                   : "枚举文件…"}
                 {progress.errors > 0 && <span className="text-amber-400"> · 错误 {progress.errors}</span>}
               </span>
             </div>
-            <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+            <div className="h-1.5 rounded-full bg-raise overflow-hidden">
               <div
-                className="h-full rounded-full bg-indigo-500 transition-all duration-200"
+                className="h-full rounded-full bg-accent transition-all duration-200"
                 style={{
                   width: `${
                     progress.adapter_count > 0
@@ -236,7 +238,7 @@ export default function App() {
         )}
 
         <div className="flex-1 flex gap-2.5 min-h-0">
-          <div className="flex-1 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 overflow-hidden flex min-w-0">
+          <div className="flex-1 rounded-xl border border-line bg-panel overflow-hidden flex min-w-0">
             <SessionList sessions={sessions} selected={selected} onSelect={setSelected} />
           </div>
           {selected ? (
@@ -249,8 +251,8 @@ export default function App() {
               toast={toast}
             />
           ) : (
-            <div className="w-[520px] shrink-0 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 flex flex-col items-center justify-center gap-3 text-zinc-600">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="w-10 h-10 text-zinc-700">
+            <div className="w-[520px] shrink-0 rounded-xl border border-line bg-panel flex flex-col items-center justify-center gap-3 text-dim">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="w-10 h-10 opacity-60">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h8m-8 4h5M21 12a9 9 0 01-13.2 7.9L3 21l1.1-4.8A9 9 0 1121 12z" />
               </svg>
               <div className="text-sm">选择左侧会话查看对话记录</div>

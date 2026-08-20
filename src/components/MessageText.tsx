@@ -6,14 +6,14 @@ function renderInline(text: string): React.ReactNode {
   return parts.map((p, i) => {
     if (p.length > 4 && p.startsWith("**") && p.endsWith("**")) {
       return (
-        <strong key={i} className="font-semibold text-zinc-100">
+        <strong key={i} className="font-semibold text-ink">
           {p.slice(2, -2)}
         </strong>
       );
     }
     if (p.length > 2 && p.startsWith("`") && p.endsWith("`")) {
       return (
-        <code key={i} className="px-1 py-0.5 rounded bg-zinc-800/90 text-[12px] text-indigo-300">
+        <code key={i} className="px-1 py-0.5 rounded bg-black/50 text-[12px] text-accent">
           {p.slice(1, -1)}
         </code>
       );
@@ -31,7 +31,7 @@ export default function MessageText({ text }: { text: string }) {
         i % 2 === 1 ? (
           <pre
             key={i}
-            className="my-1.5 overflow-x-auto rounded-lg border border-zinc-800/70 bg-zinc-950/80 px-2.5 py-2 text-[12px] leading-relaxed select-text"
+            className="my-1.5 overflow-x-auto rounded-lg border border-line bg-page px-2.5 py-2 text-[12px] leading-relaxed select-text"
           >
             {b.replace(/^[\w-]*\n/, "")}
           </pre>

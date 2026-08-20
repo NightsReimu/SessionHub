@@ -15,7 +15,7 @@ interface Props {
 }
 
 const btn =
-  "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-300 hover:text-zinc-100 transition-colors disabled:opacity-40 disabled:hover:bg-zinc-800/80 disabled:hover:text-zinc-300";
+  "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-line text-mut hover:text-ink hover:bg-raise transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-mut";
 
 export default function SessionDetail({ session, adapters, onPatch, onRemoved, onClose, toast }: Props) {
   const [tagInput, setTagInput] = useState("");
@@ -159,15 +159,15 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
   };
 
   const chip = (text: string) => (
-    <span key={text} className="px-2 py-1 rounded-md bg-zinc-900/80 border border-zinc-800/60 text-zinc-400">
+    <span key={text} className="px-2 py-1 rounded-md bg-raise border border-line text-mut">
       {text}
     </span>
   );
 
   return (
-    <div className="w-[520px] shrink-0 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 flex flex-col overflow-hidden">
+    <div className="w-[520px] shrink-0 rounded-xl border border-line bg-panel flex flex-col overflow-hidden">
       {/* 头部：标题 + 操作 + 概要 */}
-      <div className="px-5 pt-4 pb-3.5 border-b border-zinc-800/60 space-y-3">
+      <div className="px-5 pt-4 pb-3.5 border-b border-line space-y-3">
         <div className="flex items-start gap-2">
           <button
             onClick={() => saveMeta({ favorite: !session.meta.favorite })}
@@ -188,11 +188,11 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                 }}
                 onBlur={commitTitle}
                 placeholder="输入自定义标题，留空恢复默认"
-                className="w-full bg-zinc-900/90 border border-indigo-500/50 rounded-lg px-2.5 py-1.5 text-[15px] font-medium text-zinc-100 outline-none"
+                className="w-full bg-page border border-accent/50 rounded-lg px-2.5 py-1.5 text-[15px] font-medium text-ink outline-none"
               />
             ) : (
               <div className="group/title flex items-start gap-1.5">
-                <h2 className="text-[15px] font-medium text-zinc-100 leading-snug break-words flex-1">
+                <h2 className="text-[15px] font-medium text-ink leading-snug break-words flex-1">
                   {displayTitle}
                 </h2>
                 <button
@@ -200,7 +200,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                     setTitleDraft(session.meta.custom_title?.trim() || session.title);
                     setEditingTitle(true);
                   }}
-                  className="shrink-0 mt-1 p-0.5 text-zinc-600 opacity-0 group-hover/title:opacity-100 hover:text-zinc-300 transition-opacity"
+                  className="shrink-0 mt-1 p-0.5 text-dim opacity-0 group-hover/title:opacity-100 hover:text-mut transition-opacity"
                   title="编辑标题"
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
@@ -210,11 +210,11 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
               </div>
             )}
             <div className="flex items-center gap-2 mt-1">
-              <div className="text-[11px] text-zinc-600 mono truncate">{session.session_id}</div>
+              <div className="text-[11px] text-dim mono truncate">{session.session_id}</div>
               {session.meta.custom_title && !editingTitle && (
                 <button
                   onClick={() => saveMeta({ custom_title: null })}
-                  className="shrink-0 text-[10px] text-zinc-500 hover:text-zinc-300 underline underline-offset-2"
+                  className="shrink-0 text-[10px] text-dim hover:text-mut underline underline-offset-2"
                   title="恢复 harness 原标题"
                 >
                   重置标题
@@ -222,14 +222,14 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
               )}
             </div>
           </div>
-          <button onClick={onClose} className="shrink-0 p-1 text-zinc-500 hover:text-zinc-200" title="关闭">
+          <button onClick={onClose} className="shrink-0 p-1 text-dim hover:text-ink" title="关闭">
             <CloseIcon className="w-4 h-4" />
           </button>
         </div>
 
         <div className="flex flex-wrap gap-1.5">
           <button
-            className={btn + " bg-indigo-600 hover:bg-indigo-500 text-white hover:text-white"}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-accent text-black hover:bg-accent-strong transition-colors disabled:opacity-40"
             disabled={busy || !caps?.can_resume}
             title={caps?.can_resume ? "在终端中打开此对话" : "该 harness 暂不支持续接"}
             onClick={() => run(() => api.resume(session.harness_id, session.session_id), "已拉起终端")}
@@ -286,10 +286,10 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
 
         <div className="flex flex-wrap items-center gap-1.5">
           {session.meta.tags.map((t) => (
-            <span key={t} className="px-2 py-0.5 rounded-full bg-zinc-800/80 text-[11px] text-zinc-300 flex items-center gap-1">
+            <span key={t} className="px-2 py-0.5 rounded-md bg-raise border border-line text-[11px] text-mut flex items-center gap-1">
               {t}
               <button
-                className="text-zinc-500 hover:text-red-400 leading-none"
+                className="text-dim hover:text-red-400 leading-none"
                 onClick={() => saveMeta({ tags: session.meta.tags.filter((x) => x !== t) })}
               >
                 ×
@@ -301,7 +301,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
             onChange={(e) => setTagInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addTag()}
             placeholder="+ 标签"
-            className="w-16 bg-transparent text-[11px] outline-none border-b border-transparent focus:border-indigo-500 px-1 py-0.5 text-zinc-400"
+            className="w-16 bg-transparent text-[11px] outline-none border-b border-transparent focus:border-accent px-1 py-0.5 text-mut"
           />
         </div>
 
@@ -317,12 +317,12 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
         {msgLoading && messages === null ? (
           <div className="space-y-3">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="h-16 rounded-2xl bg-zinc-900/70 animate-pulse" />
+              <div key={i} className="h-16 rounded-xl bg-raise/70 animate-pulse" />
             ))}
           </div>
         ) : msgError ? (
           <div className="text-center py-10 space-y-3">
-            <div className="text-sm text-zinc-500">读取消息失败：{msgError}</div>
+            <div className="text-sm text-dim">读取消息失败：{msgError}</div>
             <button className={btn} onClick={loadMessages}>
               重试
             </button>
@@ -334,13 +334,13 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
               return (
                 <div
                   key={i}
-                  className={`max-w-[92%] rounded-2xl border px-3.5 py-2.5 ${
+                  className={`max-w-[92%] rounded-xl border px-3.5 py-2.5 ${
                     isUser
-                      ? "self-end bg-indigo-500/10 border-indigo-500/25"
-                      : "self-start bg-zinc-900/80 border-zinc-800"
+                      ? "self-end bg-accent/10 border-accent/30"
+                      : "self-start bg-raise border-line"
                   }`}
                 >
-                  <div className="text-[10px] uppercase tracking-wider mb-1 text-zinc-500 flex items-center gap-2">
+                  <div className="text-[10px] uppercase tracking-wider mb-1 text-dim flex items-center gap-2">
                     <span>{isUser ? "你" : m.role === "assistant" ? "AI" : m.role}</span>
                     {m.timestamp && (
                       <span className="normal-case tracking-normal">
@@ -348,7 +348,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                       </span>
                     )}
                   </div>
-                  <div className="text-[13px] leading-relaxed text-zinc-200 whitespace-pre-wrap break-words select-text">
+                  <div className="text-[13px] leading-relaxed text-ink/90 whitespace-pre-wrap break-words select-text">
                     <MessageText text={m.text} />
                   </div>
                 </div>
@@ -356,16 +356,16 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
             })}
           </div>
         ) : (
-          <div className="text-center py-10 text-sm text-zinc-600">
+          <div className="text-center py-10 text-sm text-dim">
             {canRead ? "该会话没有读取到消息内容" : "该 harness 暂不支持查看消息"}
           </div>
         )}
       </div>
 
       {/* 底部：详情与备注（折叠） */}
-      <div className="border-t border-zinc-800/60">
+      <div className="border-t border-line">
         <button
-          className="w-full px-5 py-2.5 text-[11px] text-zinc-500 hover:text-zinc-300 flex items-center justify-between"
+          className="w-full px-5 py-2.5 text-[11px] text-dim hover:text-mut flex items-center justify-between"
           onClick={() => setShowInfo(!showInfo)}
         >
           <span>详情与备注</span>
@@ -374,30 +374,30 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
         {showInfo && (
           <div className="px-5 pb-4 space-y-3">
             <div>
-              <div className="text-[11px] text-zinc-600 mb-0.5">项目路径</div>
-              <div className="text-xs mono text-zinc-400 break-all">{session.project_path || "—"}</div>
+              <div className="text-[11px] text-dim mb-0.5">项目路径</div>
+              <div className="text-xs mono text-mut break-all">{session.project_path || "—"}</div>
             </div>
             <div>
-              <div className="text-[11px] text-zinc-600 mb-0.5">原始文件（{session.source_format}）</div>
+              <div className="text-[11px] text-dim mb-0.5">原始文件（{session.source_format}）</div>
               {rawOk ? (
                 <button
                   onClick={() => run(() => api.reveal(session.harness_id, session.session_id), "已在文件管理器中显示")}
-                  className="text-xs mono text-indigo-400 hover:text-indigo-300 break-all text-left"
+                  className="text-xs mono text-accent hover:text-accent-strong break-all text-left"
                   disabled={busy}
                 >
                   {session.raw_path}
                 </button>
               ) : (
-                <div className="text-xs mono text-zinc-500 break-all">{session.raw_path}</div>
+                <div className="text-xs mono text-dim break-all">{session.raw_path}</div>
               )}
             </div>
             <div>
-              <div className="text-[11px] text-zinc-600 mb-0.5">备注（只写入 SessionHub 数据库，不动 harness 文件）</div>
+              <div className="text-[11px] text-dim mb-0.5">备注（只写入 SessionHub 数据库，不动 harness 文件）</div>
               <textarea
                 value={note}
                 onChange={(e) => onNoteChange(e.target.value)}
                 rows={3}
-                className="w-full bg-zinc-900/80 border border-zinc-800 rounded-lg px-2.5 py-2 text-sm outline-none focus:border-indigo-500 resize-y"
+                className="w-full bg-page border border-line rounded-lg px-2.5 py-2 text-sm text-ink outline-none focus:border-accent resize-y placeholder:text-dim"
                 placeholder="记录这个会话在做什么…"
               />
             </div>

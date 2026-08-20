@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+@theme {
+  /* 暖炭黑 + 琥珀铜 —— 避开千篇一律的 zinc/indigo */
+  --color-page: #0d0c0a;
+  --color-panel: #14120f;
+  --color-raise: #1d1a15;
+  --color-line: #29251e;
+  --color-ink: #edeae4;
+  --color-mut: #a39e94;
+  --color-dim: #6f6a60;
+  --color-accent: #e8a33d;
+  --color-accent-strong: #f2b656;
+}
+
 :root {
   color-scheme: dark;
 }
@@ -12,34 +25,35 @@ body,
 }
 
 body {
-  background: #09090b;
-  color: #e4e4e7;
+  background: #0d0c0a;
+  color: #edeae4;
   font-family:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto,
     "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  font-feature-settings: "tnum" 1;
 }
 
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: #35302a;
   border-radius: 4px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: #4a4338;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+::selection {
+  background: rgba(232, 163, 61, 0.3);
 }
 
-::selection {
-  background: rgba(99, 102, 241, 0.35);
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
