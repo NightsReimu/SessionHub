@@ -1,10 +1,12 @@
 // 生成 SessionHub 应用图标（无第三方依赖，纯 Node + zlib 手写 PNG 编码）
+// 设计：macOS 圆角矩形底（靛蓝→紫罗兰渐变 + 顶部高光），
+// 两张叠放的圆角卡片象征“会话汇聚”，SDF 解析抗锯齿。
 import { deflateSync } from "node:zlib";
 import { writeFileSync, mkdirSync } from "node:fs";
 
 const SIZE = 1024;
 
-// CRC32
+// ---------- PNG 编码 ----------
 const crcTable = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -28,59 +30,94 @@ function chunk(type, data) {
   return Buffer.concat([len, td, crc]);
 }
 
-function lerp(a, b, t) {
-  return Math.round(a + (b - a) * t);
+// ---------- 图形工具 ----------
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// 圆角盒 SDF：负值在内部
+function sdRoundBox(x, y, cx, cy, hw, hh, r) {
+  const qx = Math.abs(x - cx) - (hw - r);
+  const qy = Math.abs(y - cy) - (hh - r);
+  const ax = Math.max(qx, 0);
+  const ay = Math.max(qy, 0);
+  return Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - r;
+}
+// SDF → 覆盖率（feather 为过渡带宽，越大越柔）
+const cover = (sd, feather) => Math.min(Math.max(0.5 - sd / feather, 0), 1);
+
+// alpha-over（直通 alpha）
+function over(dst, sr, sg, sb, sa) {
+  if (sa <= 0) return dst;
+  const outA = sa + dst[3] * (1 - sa);
+  if (outA <= 0) return [0, 0, 0, 0];
+  return [
+    (sr * sa + dst[0] * dst[3] * (1 - sa)) / outA,
+    (sg * sa + dst[1] * dst[3] * (1 - sa)) / outA,
+    (sb * sa + dst[2] * dst[3] * (1 - sa)) / outA,
+    outA,
+  ];
 }
 
-// 设计：深靛蓝圆角方底 + 青→紫渐变圆环 + 橙色中心点（象征“会话汇聚”）
-const bg = [24, 24, 27];
-const c1 = [34, 211, 238]; // cyan
-const c2 = [129, 140, 248]; // indigo
-const dot = [251, 146, 60]; // orange
+// ---------- 颜色 ----------
+const BG1 = [125, 141, 252]; // 亮靛蓝
+const BG2 = [88, 28, 176]; // 深紫罗兰
+const WHITE = [255, 255, 255];
+const LINE = [99, 102, 241]; // indigo-500
+const SHADOW = [35, 28, 90];
 
-const cx = SIZE / 2;
-const ringR = SIZE * 0.31;
-const ringW = SIZE * 0.075;
-const dotR = SIZE * 0.13;
-const corner = SIZE * 0.22;
-
-function insideRoundedRect(x, y) {
-  const rx = Math.min(x, SIZE - 1 - x);
-  const ry = Math.min(y, SIZE - 1 - y);
-  if (rx >= corner || ry >= corner) return true;
-  const dx = corner - rx;
-  const dy = corner - ry;
-  return dx * dx + dy * dy <= corner * corner;
-}
-
-const raw = Buffer.alloc(SIZE * (SIZE * 4 + 1));
+// ---------- 逐像素绘制 ----------
+const S = SIZE;
+const raw = Buffer.alloc(S * (S * 4 + 1));
 let o = 0;
-for (let y = 0; y < SIZE; y++) {
-  raw[o++] = 0; // filter: none
-  for (let x = 0; x < SIZE; x++) {
-    let r = 0, g = 0, b = 0, a = 0;
-    if (insideRoundedRect(x, y)) {
-      r = bg[0]; g = bg[1]; b = bg[2]; a = 255;
-      const d = Math.hypot(x - cx, y - cx);
-      if (Math.abs(d - ringR) <= ringW) {
-        const t = (x + y) / (2 * SIZE);
-        r = lerp(c1[0], c2[0], t);
-        g = lerp(c1[1], c2[1], t);
-        b = lerp(c1[2], c2[2], t);
-      }
-      if (d <= dotR) {
-        r = dot[0]; g = dot[1]; b = dot[2];
-      }
+for (let y = 0; y < S; y++) {
+  raw[o++] = 0;
+  for (let x = 0; x < S; x++) {
+    let px = [0, 0, 0, 0];
+
+    // 底：全幅圆角矩形（macOS squircle 近似），对角渐变 + 顶部高光
+    const sdBg = sdRoundBox(x, y, S / 2, S / 2, S / 2, S / 2, S * 0.223);
+    const bgA = cover(sdBg, 1.6);
+    if (bgA > 0) {
+      const t = (x + y) / (2 * S);
+      let r = lerp(BG1[0], BG2[0], t);
+      let g = lerp(BG1[1], BG2[1], t);
+      let b = lerp(BG1[2], BG2[2], t);
+      const hl = Math.max(0, 1 - y / (S * 0.5)) * 0.16;
+      r += (255 - r) * hl;
+      g += (255 - g) * hl;
+      b += (255 - b) * hl;
+      px = over(px, r, g, b, bgA);
     }
-    raw[o++] = r; raw[o++] = g; raw[o++] = b; raw[o++] = a;
+
+    // 后卡（半透明白）
+    const sdBack = sdRoundBox(x, y, S * 0.44, S * 0.385, S * 0.19, S * 0.145, S * 0.05);
+    px = over(px, WHITE[0], WHITE[1], WHITE[2], 0.3 * cover(sdBack, 1.5));
+
+    // 前卡投影（宽 feather 模拟模糊）
+    const sdShadow = sdRoundBox(x, y, S * 0.52, S * 0.6, S * 0.2, S * 0.155, S * 0.07);
+    px = over(px, SHADOW[0], SHADOW[1], SHADOW[2], 0.4 * cover(sdShadow, 26));
+
+    // 前卡（实心白）
+    const sdFront = sdRoundBox(x, y, S * 0.52, S * 0.565, S * 0.2, S * 0.155, S * 0.06);
+    px = over(px, WHITE[0], WHITE[1], WHITE[2], 0.97 * cover(sdFront, 1.5));
+
+    // 前卡上的两条对话线
+    const sdL1 = sdRoundBox(x, y, S * 0.52, S * 0.52, S * 0.115, S * 0.017, S * 0.017);
+    px = over(px, LINE[0], LINE[1], LINE[2], 0.95 * cover(sdL1, 1.5));
+    const sdL2 = sdRoundBox(x, y, S * 0.475, S * 0.6, S * 0.07, S * 0.017, S * 0.017);
+    px = over(px, LINE[0], LINE[1], LINE[2], 0.95 * cover(sdL2, 1.5));
+
+    raw[o++] = Math.round(px[0]);
+    raw[o++] = Math.round(px[1]);
+    raw[o++] = Math.round(px[2]);
+    raw[o++] = Math.round(px[3] * 255);
   }
 }
 
 const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(SIZE, 0);
-ihdr.writeUInt32BE(SIZE, 4);
-ihdr[8] = 8; // bit depth
-ihdr[9] = 6; // color type RGBA
+ihdr.writeUInt32BE(S, 0);
+ihdr.writeUInt32BE(S, 4);
+ihdr[8] = 8;
+ihdr[9] = 6;
 const png = Buffer.concat([
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
   chunk("IHDR", ihdr),
