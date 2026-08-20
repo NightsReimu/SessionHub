@@ -59,10 +59,18 @@ impl HarnessAdapter for CodexAdapter {
         "Codex"
     }
     fn detect(&self, ctx: &DetectCtx) -> bool {
-        ctx.join(".codex").is_dir()
+        ctx.join(".codex/sessions").is_dir() || ctx.join(".codex/archived_sessions").is_dir()
     }
     fn roots(&self, ctx: &DetectCtx) -> Vec<PathBuf> {
-        vec![ctx.join(".codex/sessions"), ctx.join(".codex/archived_sessions")]
+        // 只返回实际存在的根：archived_sessions 是可选目录，尚未创建时
+        // 不能让它变成“遍历错误”而永久阻断全量扫描的 prune
+        [
+            ctx.join(".codex/sessions"),
+            ctx.join(".codex/archived_sessions"),
+        ]
+        .into_iter()
+        .filter(|p| p.is_dir())
+        .collect()
     }
 
     fn enumerate(&self, root: &Path, _ctx: &DetectCtx) -> (Vec<RawRef>, usize) {
@@ -251,5 +259,33 @@ impl HarnessAdapter for CodexAdapter {
             msgs = msgs.split_off(msgs.len() - limit);
         }
         msgs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// archived_sessions 是可选目录：不存在时既不算检测失败，也不能成为
+    /// “遍历错误”阻断 prune；两个根都不存在时才算未安装
+    #[test]
+    fn optional_roots_filtered_and_detect_requires_any() {
+        let home = std::env::temp_dir().join(format!("sh-codex-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let ctx = DetectCtx { home: home.clone() };
+        let a = CodexAdapter;
+
+        assert!(!a.detect(&ctx));
+        assert!(a.roots(&ctx).is_empty());
+
+        std::fs::create_dir_all(home.join(".codex/sessions")).unwrap();
+        assert!(a.detect(&ctx));
+        assert_eq!(a.roots(&ctx).len(), 1, "archived 不存在时不得成为根");
+
+        std::fs::create_dir_all(home.join(".codex/archived_sessions")).unwrap();
+        assert_eq!(a.roots(&ctx).len(), 2);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

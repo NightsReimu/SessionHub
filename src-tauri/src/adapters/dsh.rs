@@ -44,10 +44,15 @@ impl HarnessAdapter for DshAdapter {
         "DeepSeek Harness"
     }
     fn detect(&self, ctx: &DetectCtx) -> bool {
-        ctx.join(".dsh").is_dir()
+        ctx.join(".dsh/storages/session_projcache.json").is_file()
     }
     fn roots(&self, ctx: &DetectCtx) -> Vec<PathBuf> {
-        vec![ctx.join(".dsh/storages/session_projcache.json")]
+        // projcache 是唯一的枚举入口；不存在时 detect 为 false，
+        // 扫描器直接跳过本 adapter，不会触碰索引
+        [ctx.join(".dsh/storages/session_projcache.json")]
+            .into_iter()
+            .filter(|p| p.is_file())
+            .collect()
     }
 
     fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> (Vec<RawRef>, usize) {

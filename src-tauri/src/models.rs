@@ -35,6 +35,9 @@ pub struct SessionDto {
     #[serde(flatten)]
     pub session: Session,
     pub meta: SessionMeta,
+    /// raw_path 是否指向该会话的独立存储（false = 回退到共享/全局文件，
+    /// 前端据此禁用删除/备份/定位按钮）
+    pub raw_usable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -110,4 +113,24 @@ pub struct HubPaths {
     pub backups_dir: String,
     pub exports_dir: String,
     pub db_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HarnessStat {
+    pub harness_id: String,
+    pub sessions: usize,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatsOverview {
+    pub total_sessions: usize,
+    pub total_tokens_in: u64,
+    pub total_tokens_out: u64,
+    pub total_cost_usd: f64,
+    pub per_harness: Vec<HarnessStat>,
+    /// 按 token 消耗排序的会话（含 meta，可直接跳转）
+    pub top_sessions: Vec<SessionDto>,
 }

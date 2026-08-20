@@ -198,7 +198,7 @@ impl Db {
         let mut out = Vec::new();
         for s in rows.flatten() {
             let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
-            out.push(SessionDto { session: s, meta });
+            out.push(SessionDto { session: s, meta, raw_usable: true });
         }
         Ok(out)
     }
@@ -213,7 +213,7 @@ impl Db {
             .query_row(&sql, params![harness, id], Self::row_to_session)
             .ok()?;
         let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
-        Some(SessionDto { session: s, meta })
+        Some(SessionDto { session: s, meta, raw_usable: true })
     }
 
     pub fn search(&self, query: &str, limit: usize) -> DbResult<Vec<SessionDto>> {
@@ -264,7 +264,7 @@ impl Db {
             .into_iter()
             .map(|s| {
                 let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
-                SessionDto { session: s, meta }
+                SessionDto { session: s, meta, raw_usable: true }
             })
             .collect())
     }
@@ -363,6 +363,58 @@ impl Db {
             per_harness,
         })
     }
+
+    /// token / 费用统计：按 harness 聚合 + 消耗最高的会话
+    pub fn stats(&self, top_n: usize) -> DbResult<crate::models::StatsOverview> {
+        let conn = self.conn.lock();
+        let mut per_harness = Vec::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT harness_id, COUNT(*), COALESCE(SUM(tokens_in),0), \
+                        COALESCE(SUM(tokens_out),0), COALESCE(SUM(cost_usd),0.0) \
+                 FROM sessions GROUP BY harness_id ORDER BY 2 DESC",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(crate::models::HarnessStat {
+                    harness_id: r.get::<_, String>(0)?,
+                    sessions: r.get::<_, i64>(1)? as usize,
+                    tokens_in: r.get::<_, i64>(2)? as u64,
+                    tokens_out: r.get::<_, i64>(3)? as u64,
+                    cost_usd: r.get::<_, f64>(4)?,
+                })
+            })?;
+            for r in rows.flatten() {
+                per_harness.push(r);
+            }
+        }
+        let total_sessions = per_harness.iter().map(|h| h.sessions).sum();
+        let total_tokens_in = per_harness.iter().map(|h| h.tokens_in).sum();
+        let total_tokens_out = per_harness.iter().map(|h| h.tokens_out).sum();
+        let total_cost_usd = per_harness.iter().map(|h| h.cost_usd).sum();
+
+        let sql = format!(
+            "SELECT {} FROM sessions \
+             ORDER BY (COALESCE(tokens_in,0) + COALESCE(tokens_out,0)) DESC LIMIT {}",
+            Self::SESSION_COLS, top_n
+        );
+        let mut top_sessions = Vec::new();
+        {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], Self::row_to_session)?;
+            for s in rows.flatten() {
+                let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);
+                top_sessions.push(SessionDto { session: s, meta, raw_usable: true });
+            }
+        }
+        Ok(crate::models::StatsOverview {
+            total_sessions,
+            total_tokens_in,
+            total_tokens_out,
+            total_cost_usd,
+            per_harness,
+            top_sessions,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -446,6 +498,33 @@ mod tests {
         let hits = db.search("title-s1", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(db.search("不存在的词xyz", 10).unwrap().is_empty());
+        cleanup(&path);
+    }
+
+    /// 统计：按 harness 聚合 token/费用，top 按总消耗排序
+    #[test]
+    fn stats_aggregates_tokens_and_cost() {
+        let (db, path) = temp_db("stats");
+        let mut a = stub_session("h1", "a");
+        a.tokens_in = Some(100);
+        a.tokens_out = Some(50);
+        a.cost_usd = Some(0.5);
+        let mut b = stub_session("h1", "b");
+        b.tokens_in = Some(300);
+        b.tokens_out = Some(200);
+        let c = stub_session("h2", "c");
+        db.upsert_session(&a).unwrap();
+        db.upsert_session(&b).unwrap();
+        db.upsert_session(&c).unwrap();
+
+        let s = db.stats(5).unwrap();
+        assert_eq!(s.total_sessions, 3);
+        assert_eq!(s.total_tokens_in, 400);
+        assert_eq!(s.total_tokens_out, 250);
+        assert!((s.total_cost_usd - 0.5).abs() < 1e-9);
+        assert_eq!(s.per_harness[0].harness_id, "h1");
+        assert_eq!(s.per_harness[0].sessions, 2);
+        assert_eq!(s.top_sessions[0].session.session_id, "b");
         cleanup(&path);
     }
 }

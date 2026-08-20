@@ -41,6 +41,24 @@ export interface SessionMeta {
 
 export interface SessionDto extends Session {
   meta: SessionMeta;
+  raw_usable: boolean;
+}
+
+export interface HarnessStat {
+  harness_id: string;
+  sessions: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+}
+
+export interface StatsOverview {
+  total_sessions: number;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_cost_usd: number;
+  per_harness: HarnessStat[];
+  top_sessions: SessionDto[];
 }
 
 export interface AdapterScanStat {
@@ -97,6 +115,7 @@ export const api = {
   setMeta: (harnessId: string, sessionId: string, meta: SessionMeta) =>
     invoke<void>("set_session_meta", { harnessId, sessionId, meta }),
   counts: () => invoke<Counts>("get_counts"),
+  getStats: () => invoke<StatsOverview>("get_stats"),
   hubPaths: () => invoke<HubPaths>("get_hub_paths"),
   watcherStart: () => invoke<boolean>("watcher_start"),
   watcherStop: () => invoke<boolean>("watcher_stop"),

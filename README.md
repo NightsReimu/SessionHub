@@ -71,6 +71,9 @@ pub trait HarnessAdapter: Send + Sync {
 - **导出**：Markdown（元数据 + 消息）或 JSONL，写入 `~/SessionHub/exports/`
 - **标签 / 备注 / 收藏**：只写 SessionHub 自己的 SQLite，**完全不碰 harness 文件**
 - **实时监听**：notify 监听各 harness 根目录，文件变化去抖 800ms 后增量重扫并推送前端
+- **用量统计**：侧栏「📊 用量统计」按 harness 聚合 token/费用，列出消耗 Top 会话
+- **配置插件**：`~/SessionHub/adapters.json` 的 `generic_extra_roots` 可让 GenericAdapter
+  扫描任意自定义目录，免重编译；写正式 adapter 见 [docs/ADAPTERS.md](docs/ADAPTERS.md)
 
 ## 开发
 
@@ -122,5 +125,6 @@ cargo test scan_real_machine_smoke -- --ignored --nocapture   # 可选：对本�
 - [x] M1 核心 3 adapter：Claude Code / Codex / OpenCode
 - [x] M2 DSH / Zcode + 续接 + 备份导出
 - [x] M3 占位探测（Claude Desktop / Kimi / OpenClaw / Hermes）+ 标签备注收藏 + 实时状态
-- [ ] M4 Generic adapter 完善 + 插件机制 + 打包发布（GitHub Actions + tauri-action）
-- [ ] M5（可选）跨设备同步、AI 生成标题、token/费用面板
+- [x] M4 配置插件（adapters.json 自定义根目录）+ [adapter 开发文档](docs/ADAPTERS.md) + 打包发布（GitHub Actions）
+- [x] M5-lite token/费用统计面板（本地聚合，不联网）
+- [ ] M5（可选）跨设备同步、AI 生成标题（需联网，与「本地优先」权衡后再定）

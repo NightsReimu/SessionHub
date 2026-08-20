@@ -17,42 +17,45 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, t
   const [messages, setMessages] = useState<MessagePreview[] | null>(null);
   const [busy, setBusy] = useState(false);
   const noteTimer = useRef<number | null>(null);
-  const noteRef = useRef(session.meta.note);
+  // metaRef：用户当前的最新编辑（含防抖中的备注）；
+  // savedMetaRef：已确认落盘的最新状态
+  const metaRef = useRef(session.meta);
+  const savedMetaRef = useRef(session.meta);
 
   const adapter = adapters.find((a) => a.id === session.harness_id);
   const caps = adapter?.capabilities;
+  const rawOk = session.raw_usable;
 
   useEffect(() => {
     setNote(session.meta.note);
-    noteRef.current = session.meta.note;
+    metaRef.current = session.meta;
+    savedMetaRef.current = session.meta;
     setTagInput("");
     setMessages(null);
     const harnessId = session.harness_id;
     const sessionId = session.session_id;
-    const lastSavedNote = session.meta.note;
-    const tags = session.meta.tags;
-    const favorite = session.meta.favorite;
     return () => {
-      // 切换会话：取消防抖定时器（它捕获的是旧会话，触发会让面板跳回去），
-      // 并把还没落盘的备注直接写库——不走 onPatch，避免选中项被切回旧会话
       if (noteTimer.current) {
         window.clearTimeout(noteTimer.current);
         noteTimer.current = null;
       }
-      if (noteRef.current !== lastSavedNote) {
-        api
-          .setMeta(harnessId, sessionId, { tags, note: noteRef.current, favorite })
-          .catch((e) => console.error("切换时保存备注失败", e));
+      // 切换前把未落盘的备注写库：用 metaRef 里的最新整体元数据，
+      // 避免用过期的 tags/favorite 覆盖 600ms 内刚保存的修改；
+      // 不走 onPatch，避免选中项被切回旧会话
+      const pending = metaRef.current;
+      if (pending.note !== savedMetaRef.current.note) {
+        api.setMeta(harnessId, sessionId, pending).catch((e) => console.error("切换时保存备注失败", e));
       }
     };
   }, [session.harness_id, session.session_id]);
 
   const saveMeta = async (patch: Partial<SessionDto["meta"]>) => {
-    const meta = { tags: session.meta.tags, note, favorite: session.meta.favorite, ...patch };
-    const next = { ...session, meta };
-    onPatch(next);
+    const meta = { ...metaRef.current, ...patch };
+    metaRef.current = meta;
+    onPatch({ ...session, meta });
     try {
       await api.setMeta(session.harness_id, session.session_id, meta);
+      savedMetaRef.current = meta;
     } catch (e) {
       toast("err", `保存失败：${String(e)}`);
     }
@@ -60,7 +63,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, t
 
   const onNoteChange = (v: string) => {
     setNote(v);
-    noteRef.current = v;
+    metaRef.current = { ...metaRef.current, note: v };
     if (noteTimer.current) window.clearTimeout(noteTimer.current);
     noteTimer.current = window.setTimeout(() => saveMeta({ note: v }), 600);
   };
@@ -151,13 +154,22 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, t
           <div className="text-[11px] text-zinc-500 mb-1">项目路径</div>
           <div className="text-xs mono text-zinc-300 break-all">{session.project_path || "—"}</div>
           <div className="text-[11px] text-zinc-500 mt-2 mb-1">原始文件（{session.source_format}）</div>
-          <button
-            onClick={() => run(() => api.reveal(session.harness_id, session.session_id), "已在文件管理器中显示")}
-            className="text-xs mono text-indigo-400 hover:text-indigo-300 break-all text-left"
-            disabled={busy}
-          >
-            {session.raw_path}
-          </button>
+          {rawOk ? (
+            <button
+              onClick={() => run(() => api.reveal(session.harness_id, session.session_id), "已在文件管理器中显示")}
+              className="text-xs mono text-indigo-400 hover:text-indigo-300 break-all text-left"
+              disabled={busy}
+            >
+              {session.raw_path}
+            </button>
+          ) : (
+            <div className="text-xs mono text-zinc-500 break-all">{session.raw_path}</div>
+          )}
+          {!rawOk && (
+            <div className="mt-1.5 text-[11px] text-amber-400/90">
+              ⚠ 该会话的独立存储目录缺失，raw 指向共享/全局文件——删除、备份、定位已禁用
+            </div>
+          )}
         </div>
 
         <div>
@@ -204,7 +216,12 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, t
           >
             ▶ 续接
           </button>
-          <button className={btn} disabled={busy || !caps?.can_backup} onClick={() => run(() => api.backup(session.harness_id, session.session_id), "已备份到")}>
+          <button
+            className={btn}
+            disabled={busy || !caps?.can_backup || !rawOk}
+            title={!rawOk ? "独立存储目录缺失，无法备份" : "复制原始文件到 ~/SessionHub/backups"}
+            onClick={() => run(() => api.backup(session.harness_id, session.session_id), "已备份到")}
+          >
             备份
           </button>
           <button className={btn} disabled={busy} onClick={() => run(() => api.exportSession(session.harness_id, session.session_id, "md"), "已导出 Markdown 到")}>
@@ -215,8 +232,14 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, t
           </button>
           <button
             className={btn + " text-red-400 hover:bg-red-950"}
-            disabled={busy || !caps?.can_delete}
-            title={caps?.can_delete ? "原始文件移入回收站" : "该 harness 存储为共享数据库，不支持删除单个会话"}
+            disabled={busy || !caps?.can_delete || !rawOk}
+            title={
+              !caps?.can_delete
+                ? "该 harness 存储为共享数据库，不支持删除单个会话"
+                : !rawOk
+                  ? "独立存储目录缺失，删除会误伤共享文件"
+                  : "原始文件移入回收站"
+            }
             onClick={onDelete}
           >
             删除

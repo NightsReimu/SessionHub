@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, AdapterInfo, Counts, HubPaths, SessionDto } from "./api";
+import { api, AdapterInfo, Counts, HubPaths, SessionDto, StatsOverview } from "./api";
 import Sidebar from "./components/Sidebar";
 import SessionList from "./components/SessionList";
 import SessionDetail from "./components/SessionDetail";
+import StatsModal from "./components/StatsModal";
 
 export interface Toast {
   id: number;
@@ -25,6 +26,7 @@ export default function App() {
   const [watching, setWatching] = useState(false);
   const [hub, setHub] = useState<HubPaths | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [stats, setStats] = useState<StatsOverview | null>(null);
   // 请求序号：只应用最后一次请求的结果，防止乱序响应覆盖新结果
   const reqSeq = useRef(0);
 
@@ -125,6 +127,14 @@ export default function App() {
     }
   };
 
+  const openStats = async () => {
+    try {
+      setStats(await api.getStats());
+    } catch (e) {
+      toast("err", `统计加载失败：${String(e)}`);
+    }
+  };
+
   const patchSelected = (s: SessionDto) => {
     setSelected(s);
     setSessions((list) => list.map((x) => (x.harness_id === s.harness_id && x.session_id === s.session_id ? s : x)));
@@ -149,6 +159,7 @@ export default function App() {
         watching={watching}
         onToggleWatcher={toggleWatcher}
         hub={hub}
+        onOpenStats={openStats}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -189,6 +200,17 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {stats && (
+        <StatsModal
+          stats={stats}
+          onClose={() => setStats(null)}
+          onSelect={(s) => {
+            setSelected(s);
+            setStats(null);
+          }}
+        />
+      )}
 
       <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50 max-w-md">
         {toasts.map((t) => (

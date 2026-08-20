@@ -22,6 +22,16 @@ impl AppState {
         self.adapters.iter().find(|a| a.id() == id).map(|a| a.as_ref())
     }
 
+    /// 填充每会话的 raw_usable 标志，前端据此禁用危险按钮
+    fn apply_raw_usable(&self, dtos: &mut [SessionDto]) {
+        for d in dtos.iter_mut() {
+            d.raw_usable = self
+                .adapter(&d.session.harness_id)
+                .map(|a| a.can_use_raw_path(&d.session))
+                .unwrap_or(false);
+        }
+    }
+
     /// 删除/备份/定位共用的前置检查：会话存在 + raw_path 指向独立存储
     fn session_with_usable_raw(
         &self,
@@ -77,7 +87,7 @@ fn list_sessions(
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Vec<SessionDto>, String> {
-    state
+    let mut dtos = state
         .db
         .list_sessions(
             harness.as_deref(),
@@ -85,12 +95,16 @@ fn list_sessions(
             limit.unwrap_or(800),
             offset.unwrap_or(0),
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state.apply_raw_usable(&mut dtos);
+    Ok(dtos)
 }
 
 #[tauri::command]
 fn search_sessions(state: tauri::State<AppState>, query: String) -> Result<Vec<SessionDto>, String> {
-    state.db.search(&query, 300).map_err(|e| e.to_string())
+    let mut dtos = state.db.search(&query, 300).map_err(|e| e.to_string())?;
+    state.apply_raw_usable(&mut dtos);
+    Ok(dtos)
 }
 
 #[tauri::command]
@@ -213,6 +227,13 @@ fn get_counts(state: tauri::State<AppState>) -> Result<Counts, String> {
 }
 
 #[tauri::command]
+fn get_stats(state: tauri::State<AppState>) -> Result<StatsOverview, String> {
+    let mut stats = state.db.stats(10).map_err(|e| e.to_string())?;
+    state.apply_raw_usable(&mut stats.top_sessions);
+    Ok(stats)
+}
+
+#[tauri::command]
 fn get_hub_paths() -> HubPaths {
     let hub = actions::hub_dir();
     HubPaths {
@@ -275,6 +296,7 @@ pub fn run() {
             reveal_raw,
             set_session_meta,
             get_counts,
+            get_stats,
             get_hub_paths,
             watcher_start,
             watcher_stop,

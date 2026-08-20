@@ -22,9 +22,10 @@ interface Props {
   watching: boolean;
   onToggleWatcher: () => void;
   hub: HubPaths | null;
+  onOpenStats: () => void;
 }
 
-export default function Sidebar({ adapters, counts, filter, onFilter, watching, onToggleWatcher, hub }: Props) {
+export default function Sidebar({ adapters, counts, filter, onFilter, watching, onToggleWatcher, hub, onOpenStats }: Props) {
   const itemCls = (active: boolean) =>
     `w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm cursor-pointer ${
       active ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
@@ -65,6 +66,12 @@ export default function Sidebar({ adapters, counts, filter, onFilter, watching, 
       </div>
 
       <div className="p-3 border-t border-zinc-800 space-y-2">
+        <button
+          onClick={onOpenStats}
+          className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
+        >
+          📊 用量统计
+        </button>
         <button
           onClick={onToggleWatcher}
           className={`w-full px-3 py-1.5 text-xs rounded-lg border ${
