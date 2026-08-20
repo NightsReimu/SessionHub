@@ -77,7 +77,7 @@ export default function SessionList({ sessions, selected, onSelect }: Props) {
                 className={`h-full rounded-lg border px-3 py-2 cursor-pointer flex flex-col justify-center transition-colors ${
                   active
                     ? "bg-accent/10 border-accent/40"
-                    : "border-transparent hover:bg-raise"
+                    : "border-transparent hover:bg-white/5"
                 }`}
               >
                 <div className="flex items-center gap-2 min-w-0">
@@ -103,7 +103,7 @@ export default function SessionList({ sessions, selected, onSelect }: Props) {
                     <span className="shrink-0">${s.cost_usd.toFixed(3)}</span>
                   )}
                   {s.meta.tags.slice(0, 3).map((t) => (
-                    <span key={t} className="shrink-0 px-1.5 py-px rounded bg-raise text-mut">
+                    <span key={t} className="shrink-0 px-1.5 py-px rounded bg-white/[0.06] text-mut">
                       {t}
                     </span>
                   ))}

@@ -15,7 +15,7 @@ interface Props {
 }
 
 const btn =
-  "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-line text-mut hover:text-ink hover:bg-raise transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-mut";
+  "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-white/[0.04] border border-white/[0.07] text-mut hover:text-ink hover:bg-white/[0.08] transition-colors disabled:opacity-40 disabled:hover:bg-white/[0.04] disabled:hover:text-mut";
 
 export default function SessionDetail({ session, adapters, onPatch, onRemoved, onClose, toast }: Props) {
   const [tagInput, setTagInput] = useState("");
@@ -159,15 +159,15 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
   };
 
   const chip = (text: string) => (
-    <span key={text} className="px-2 py-1 rounded-md bg-raise border border-line text-mut">
+    <span key={text} className="px-2 py-1 rounded-md bg-white/[0.05] border border-white/[0.08] text-mut">
       {text}
     </span>
   );
 
   return (
-    <div className="w-[520px] shrink-0 rounded-xl border border-line bg-panel flex flex-col overflow-hidden">
+    <div className="w-[520px] shrink-0 rounded-xl glass flex flex-col overflow-hidden">
       {/* 头部：标题 + 操作 + 概要 */}
-      <div className="px-5 pt-4 pb-3.5 border-b border-line space-y-3">
+      <div className="px-5 pt-4 pb-3.5 border-b border-white/[0.06] space-y-3">
         <div className="flex items-start gap-2">
           <button
             onClick={() => saveMeta({ favorite: !session.meta.favorite })}
@@ -286,7 +286,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
 
         <div className="flex flex-wrap items-center gap-1.5">
           {session.meta.tags.map((t) => (
-            <span key={t} className="px-2 py-0.5 rounded-md bg-raise border border-line text-[11px] text-mut flex items-center gap-1">
+            <span key={t} className="px-2 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08] text-[11px] text-mut flex items-center gap-1">
               {t}
               <button
                 className="text-dim hover:text-red-400 leading-none"
@@ -317,7 +317,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
         {msgLoading && messages === null ? (
           <div className="space-y-3">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="h-16 rounded-xl bg-raise/70 animate-pulse" />
+              <div key={i} className="h-16 rounded-xl bg-white/5 animate-pulse" />
             ))}
           </div>
         ) : msgError ? (
@@ -337,7 +337,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                   className={`max-w-[92%] rounded-xl border px-3.5 py-2.5 ${
                     isUser
                       ? "self-end bg-accent/10 border-accent/30"
-                      : "self-start bg-raise border-line"
+                      : "self-start bg-white/[0.05] border-white/[0.08]"
                   }`}
                 >
                   <div className="text-[10px] uppercase tracking-wider mb-1 text-dim flex items-center gap-2">
@@ -363,7 +363,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
       </div>
 
       {/* 底部：详情与备注（折叠） */}
-      <div className="border-t border-line">
+      <div className="border-t border-white/[0.06]">
         <button
           className="w-full px-5 py-2.5 text-[11px] text-dim hover:text-mut flex items-center justify-between"
           onClick={() => setShowInfo(!showInfo)}
@@ -397,7 +397,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                 value={note}
                 onChange={(e) => onNoteChange(e.target.value)}
                 rows={3}
-                className="w-full bg-page border border-line rounded-lg px-2.5 py-2 text-sm text-ink outline-none focus:border-accent resize-y placeholder:text-dim"
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2.5 py-2 text-sm text-ink outline-none focus:border-accent resize-y placeholder:text-dim"
                 placeholder="记录这个会话在做什么…"
               />
             </div>

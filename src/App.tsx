@@ -5,6 +5,7 @@ import Sidebar from "./components/Sidebar";
 import SessionList from "./components/SessionList";
 import SessionDetail from "./components/SessionDetail";
 import StatsModal from "./components/StatsModal";
+import MouseTrail from "./components/MouseTrail";
 
 export interface Toast {
   id: number;
@@ -156,8 +157,13 @@ export default function App() {
 
   return (
     <div className="relative flex h-full gap-2.5 p-2.5 bg-page">
-      {/* 顶部微光晕，打破纯平背景 */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(55%_100%_at_50%_0%,rgba(232,163,61,0.06),transparent)]" />
+      {/* 底部彩色漂浮光斑：透过玻璃面板形成玻璃拟态 */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute -top-32 -left-24 w-[480px] h-[480px] rounded-full bg-violet-600/15 blur-[110px] animate-blob1" />
+        <div className="absolute top-1/3 -right-32 w-[420px] h-[420px] rounded-full bg-amber-500/13 blur-[110px] animate-blob2" />
+        <div className="absolute -bottom-40 left-1/3 w-[460px] h-[460px] rounded-full bg-cyan-500/11 blur-[120px] animate-blob3" />
+      </div>
+      <MouseTrail />
       <Sidebar
         adapters={adapters}
         counts={counts}
@@ -168,12 +174,11 @@ export default function App() {
         }}
         watching={watching}
         onToggleWatcher={toggleWatcher}
-        hub={hub}
         onOpenStats={openStats}
       />
 
       <div className="flex-1 flex flex-col gap-2.5 min-w-0">
-        <div className="flex items-center gap-2.5 rounded-xl border border-line bg-panel px-3.5 py-2.5">
+        <div className="flex items-center gap-2.5 rounded-xl glass px-3.5 py-2.5">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 text-dim shrink-0">
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m1.6-4.4a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
@@ -201,7 +206,7 @@ export default function App() {
         </div>
 
         {progress && (
-          <div className="rounded-xl border border-line bg-panel px-4 py-2.5">
+          <div className="rounded-xl glass px-4 py-2.5">
             <div className="flex items-center justify-between text-[11px] text-mut mb-1.5">
               <span>
                 正在扫描 <span className="text-ink">{progress.adapter_id}</span>
@@ -238,7 +243,7 @@ export default function App() {
         )}
 
         <div className="flex-1 flex gap-2.5 min-h-0">
-          <div className="flex-1 rounded-xl border border-line bg-panel overflow-hidden flex min-w-0">
+          <div className="flex-1 rounded-xl glass overflow-hidden flex min-w-0">
             <SessionList sessions={sessions} selected={selected} onSelect={setSelected} />
           </div>
           {selected ? (
@@ -251,7 +256,7 @@ export default function App() {
               toast={toast}
             />
           ) : (
-            <div className="w-[520px] shrink-0 rounded-xl border border-line bg-panel flex flex-col items-center justify-center gap-3 text-dim">
+            <div className="w-[520px] shrink-0 rounded-xl glass flex flex-col items-center justify-center gap-3 text-dim">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="w-10 h-10 opacity-60">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h8m-8 4h5M21 12a9 9 0 01-13.2 7.9L3 21l1.1-4.8A9 9 0 1121 12z" />
               </svg>

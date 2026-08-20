@@ -10,7 +10,7 @@ interface Props {
 
 export default function StatsModal({ stats, onClose, onSelect }: Props) {
   const card = (label: string, value: string) => (
-    <div className="bg-raise rounded-lg px-4 py-3 flex-1">
+    <div className="bg-white/[0.05] rounded-lg px-4 py-3 flex-1">
       <div className="text-[11px] text-dim">{label}</div>
       <div className="text-xl font-semibold text-ink mt-1">{value}</div>
     </div>
@@ -22,7 +22,7 @@ export default function StatsModal({ stats, onClose, onSelect }: Props) {
       onClick={onClose}
     >
       <div
-        className="bg-page border border-line rounded-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 space-y-5"
+        className="glass rounded-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 space-y-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -43,7 +43,7 @@ export default function StatsModal({ stats, onClose, onSelect }: Props) {
           <div className="text-xs text-dim mb-2">按 Harness</div>
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[11px] text-dim border-b border-line">
+              <tr className="text-left text-[11px] text-dim border-b border-white/[0.08]">
                 <th className="py-1.5 font-normal">Harness</th>
                 <th className="py-1.5 font-normal text-right">会话</th>
                 <th className="py-1.5 font-normal text-right">输入</th>
@@ -53,7 +53,7 @@ export default function StatsModal({ stats, onClose, onSelect }: Props) {
             </thead>
             <tbody>
               {stats.per_harness.map((h) => (
-                <tr key={h.harness_id} className="border-b border-line">
+                <tr key={h.harness_id} className="border-b border-white/[0.08]">
                   <td className="py-1.5">
                     <span className={`text-[10px] px-1.5 py-0.5 rounded border ${harnessBadge(h.harness_id)}`}>
                       {h.harness_id}
@@ -76,7 +76,7 @@ export default function StatsModal({ stats, onClose, onSelect }: Props) {
               <button
                 key={s.harness_id + "/" + s.session_id}
                 onClick={() => onSelect(s)}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-raise text-left"
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 text-left"
               >
                 <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${harnessBadge(s.harness_id)}`}>
                   {s.harness_id}

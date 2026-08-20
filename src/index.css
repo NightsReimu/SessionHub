@@ -57,3 +57,28 @@ body {
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+
+/* 玻璃拟态面板：半透明 + 背景模糊，让底部彩色光斑透上来 */
+.glass {
+  background: rgba(20, 18, 15, 0.52);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* 背景漂浮光斑 */
+@keyframes drift1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(70px, 50px) scale(1.12); }
+}
+@keyframes drift2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-60px, 30px) scale(1.08); }
+}
+@keyframes drift3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(40px, -50px) scale(1.15); }
+}
+.animate-blob1 { animation: drift1 22s ease-in-out infinite; }
+.animate-blob2 { animation: drift2 26s ease-in-out infinite; }
+.animate-blob3 { animation: drift3 30s ease-in-out infinite; }
