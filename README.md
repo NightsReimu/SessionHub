@@ -1,130 +1,205 @@
-# SessionHub
+<div align="center">
 
-一个**本地、只读优先、跨平台（macOS + Windows）**的桌面客户端，用「Adapter 插件」架构把
-Claude Code、Codex、OpenCode、DeepSeek Harness、Zcode 等 AI coding harness 的会话
-**统一发现 → 浏览 → 搜索 → 续接 → 备份 / 清理**。
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d0c0a,100:e8a33d&height=200&section=header&text=SessionHub&fontSize=64&fontColor=ffffff&animation=twinkling&desc=Unified%20AI%20Session%20Manager&descSize=18&descAlignY=72" width="100%" />
 
-![技术栈](https://img.shields.io/badge/Tauri_v2-Rust_%2B_React-blue)
+<br/>
 
-## 五条定死的原则
+<a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=21&pause=1200&color=E8A33D&center=true&vCenter=true&width=720&lines=Discover+every+AI+coding+session+on+your+machine;Claude+Code+%C2%B7+Codex+%C2%B7+OpenCode+%C2%B7+Zcode+%C2%B7+DSH;Search+%C2%B7+Resume+%C2%B7+Backup+%C2%B7+Clean;Local-first.+Read-only+by+default." alt="Typing SVG" /></a>
 
-1. **Read-only by default** —— 只读；删除一律走系统回收站，绝不硬删
-2. **Adapter 化** —— 每个 harness 一个 adapter，新增 harness 不改核心
-3. **本地优先** —— 索引存本地 SQLite（`~/SessionHub/sessionhub.db`），不联网
-4. **防御式解析** —— 各家格式无文档且会变，单行/单文件解析失败只跳过，不崩溃
-5. **流式读大文件** —— 几百 MB 的 JSONL 逐行解析，不全量载入内存
+<br/>
 
-## 技术栈
+[![Release](https://img.shields.io/github/actions/workflow/status/NightsReimu/SessionHub/release.yml?style=flat-square&label=build)](https://github.com/NightsReimu/SessionHub/actions)
+[![Tag](https://img.shields.io/github/v/tag/NightsReimu/SessionHub?style=flat-square&color=e8a33d)](https://github.com/NightsReimu/SessionHub/tags)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-0d0c0a?style=flat-square)
+![Tauri](https://img.shields.io/badge/Tauri-v2-e8a33d?style=flat-square)
+![Rust](https://img.shields.io/badge/Rust-1.82%2B-e8a33d?style=flat-square)
+![React](https://img.shields.io/badge/React-18-e8a33d?style=flat-square)
+![SQLite](https://img.shields.io/badge/SQLite-FTS5-e8a33d?style=flat-square)
 
-- **壳**：Tauri v2（Rust 后端 + React/TypeScript 前端），安装包约 10MB
-- **后端**：rusqlite（FTS5 全文搜索，不可用时降级 LIKE）、notify（文件监听）、trash（回收站）、walkdir、zstd（DSH 压缩会话）
-- **前端**：React 18 + Tailwind CSS 4 + @tanstack/react-virtual（虚拟列表）
+<br/>
 
-## 架构分层
+<img src="docs/assets/screenshot.jpg" width="92%" alt="SessionHub 主界面" />
 
+</div>
+
+<br/>
+
+把所有 AI 编程 harness 的会话——Claude Code、Codex、OpenCode、Zcode、DeepSeek Harness——**统一发现 → 浏览 → 搜索 → 续接 → 备份 / 清理**。本地优先，只读默认，跨平台原生窗口。
+
+## 特性
+
+<table>
+<tr>
+<td width="33%">
+
+**统一发现**
+Adapter 插件架构，每个 harness 一个适配器，新增不改核心
+
+</td>
+<td width="33%">
+
+**全文搜索**
+SQLite FTS5，不可用时自动降级 LIKE，标题/路径/标签/备注全覆盖
+
+</td>
+<td width="33%">
+
+**一键续接**
+`claude --resume` / `codex resume` / `opencode --continue`，跨平台拉起终端
+
+</td>
+</tr>
+<tr>
+<td>
+
+**只读优先**
+删除一律走系统回收站；标签/备注/收藏只写自己的数据库
+
+</td>
+<td>
+
+**用量统计**
+按模型刊例价估算费用（ccusage 口径），按 harness 聚合 token 与 Top 会话
+
+</td>
+<td>
+
+**实时监听**
+notify 监听各 harness 根目录，去抖增量重扫，扫描进度实时可见
+
+</td>
+</tr>
+<tr>
+<td>
+
+**对话内嵌预览**
+点开会话直接看完整对话，轻量 Markdown 渲染，气泡式排版
+
+</td>
+<td>
+
+**备份导出**
+文件复制 / 目录打 zip / 导出 Markdown / JSONL
+
+</td>
+<td>
+
+**玻璃拟态 UI**
+半透明面板 + 背景流光 + 彩色鼠标轨迹，拒绝默认皮肤
+
+</td>
+</tr>
+</table>
+
+## 架构
+
+```mermaid
+flowchart LR
+    UI[React UI<br/>Tailwind + 虚拟列表] -- IPC --> Core[Rust Core]
+    subgraph Core
+        REG[Registry<br/>adapter 注册发现]
+        SCAN[Scanner / Watcher<br/>遍历解析 + 增量监听]
+        ACT[ActionExecutor<br/>续接 / 备份 / 删除 / 导出]
+    end
+    SCAN --> DB[(SQLite + FTS5<br/>~/SessionHub)]
+    ACT --> DB
+    REG --> A1[Claude Code] & A2[Codex] & A3[OpenCode] & A4[Zcode] & A5[DSH] & A6[Generic 兜底]
 ```
-UI (React) ──IPC──> Core (Rust) ──> 数据层
-                     ├─ Registry   (adapter 注册/发现)
-                     ├─ Scanner    (遍历/解析) / Watcher (notify 增量)
-                     ├─ ActionExecutor (续接/备份/删除/导出)
-                     └─ Adapters   (claude-code/codex/opencode/zcode/dsh/generic)
-```
 
-统一数据模型 `Session`（id / harnessId / projectPath / title / 起止时间 / 消息数 /
-token / 费用 / 状态 / rawPath / sourceFormat），核心是一个 Rust trait：
+加新 harness = 在 `src-tauri/src/adapters/` 实现一个 `HarnessAdapter` trait + 注册一行。
+开发指南与安全契约见 [docs/ADAPTERS.md](docs/ADAPTERS.md)。
 
-```rust
-pub trait HarnessAdapter: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn detect(&self, ctx: &DetectCtx) -> bool;        // 是否安装
-    fn roots(&self, ctx: &DetectCtx) -> Vec<PathBuf>; // 扫描根目录
-    fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> Vec<RawRef>;
-    fn parse(&self, raw: &RawRef) -> Option<Session>; // 归一化（容错）
-    fn resume_spec(&self, s: &Session) -> Option<ResumeSpec>;
-    fn capabilities(&self) -> Capabilities;
-}
-```
+## 五条原则
 
-新增 harness = 在 `src-tauri/src/adapters/` 加一个实现该 trait 的文件 + 在
-`all_adapters()` 注册一行。
+1. **Read-only by default** —— 只读；删除走回收站，绝不硬删
+2. **Adapter 化** —— 每 harness 一个 adapter，新增不改核心
+3. **本地优先** —— 索引存本地 SQLite，不联网
+4. **防御式解析** —— 格式无文档且会变，单行失败只跳过不崩溃
+5. **流式读大文件** —— 几百 MB 的 JSONL / zstd 逐行流式解析
 
-## 支持的 Harness（macOS 实测路径）
+<details>
+<summary><b>支持的 Harness 与存储格式</b>（macOS 实测路径）</summary>
+
+<br/>
 
 | Harness | 存储位置 | 格式 | 状态 |
 |---|---|---|---|
-| Claude Code | `~/.claude/projects/<编码项目>/<id>.jsonl` + `sessions-index.json` | JSONL | ✅ 完整支持 |
-| Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` + `archived_sessions/` | JSONL | ✅ 完整支持 |
-| OpenCode | `~/.local/share/opencode/opencode.db`（只读打开） | SQLite | ✅ 完整支持 |
-| Zcode | `~/.zcode/cli/db/db.sqlite`（与 OpenCode 同 schema） | SQLite | ✅ 完整支持 |
-| DeepSeek Harness | `~/.dsh/storages/session_projcache.json` + `~/.dsh/sessions/*/session.jsonl.zstd` | JSON 索引 + zstd JSONL | ✅ 完整支持 |
-| Claude Desktop / Kimi / OpenClaw / Hermes | 见 `adapters/generic.rs` | 待确认 | 🕐 占位探测 + Generic 兜底 |
+| Claude Code | `~/.claude/projects/<编码项目>/<id>.jsonl` + `sessions-index.json` | JSONL | 完整支持 |
+| Codex | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` + `archived_sessions/` | JSONL | 完整支持 |
+| OpenCode | `~/.local/share/opencode/opencode.db`（只读打开） | SQLite | 完整支持 |
+| Zcode | `~/.zcode/cli/db/db.sqlite`（用量聚合自 `model_usage`） | SQLite | 完整支持 |
+| DeepSeek Harness | `~/.dsh/storages/session_projcache.json` + `session.jsonl.zstd` | JSON + zstd | 完整支持 |
+| Claude Desktop / Kimi / OpenClaw / Hermes | 占位探测 + Generic 兜底 | 待确认 | 占位 |
 
-> SQLite 型 harness（OpenCode/Zcode）的会话存在共享数据库里，因此**不支持删除和备份单会话**；
-> 导出 Markdown/JSONL 不受影响。
+> SQLite 型 harness（OpenCode/Zcode）的会话存在共享数据库里，因此**不支持删除和备份单会话**；导出 Markdown/JSONL 不受影响。
+>
+> 费用为刊例估算：Claude 按行内模型分档（Opus/Sonnet/Haiku，缓存读写单独计桶）、Codex 按 GPT-5 系（缓存输入折扣价）、DSH 按 DeepSeek 刊例、Zcode 按模型族近似价；OpenCode 为真实费用。
 
-## 动作
+</details>
 
-- **续接**：`claude --resume <id>` / `codex resume <id>` / `opencode --continue` /
-  `zcode --continue` / `dsh`；macOS 经 `Terminal.app` 拉起，Windows 优先 `wt`（退回 `cmd /k`）
-- **删除**：`trash` crate 送系统回收站；标签备注保留在 SessionHub 库中
-- **备份**：复制到 `~/SessionHub/backups/<harness>/<日期>/`（目录自动打 zip）
-- **导出**：Markdown（元数据 + 消息）或 JSONL，写入 `~/SessionHub/exports/`
-- **标签 / 备注 / 收藏**：只写 SessionHub 自己的 SQLite，**完全不碰 harness 文件**
-- **实时监听**：notify 监听各 harness 根目录，文件变化去抖 800ms 后增量重扫并推送前端
-- **用量统计**：侧栏「📊 用量统计」按 harness 聚合 token/费用，列出消耗 Top 会话
-- **配置插件**：`~/SessionHub/adapters.json` 的 `generic_extra_roots` 可让 GenericAdapter
-  扫描任意自定义目录，免重编译；写正式 adapter 见 [docs/ADAPTERS.md](docs/ADAPTERS.md)
+<details>
+<summary><b>配置插件：免重编译扩展扫描目录</b></summary>
 
-## 开发
+<br/>
 
-```bash
-npm install
-npm run tauri dev        # 开发模式（热更新）
+编辑 `~/SessionHub/adapters.json`：
+
+```json
+{
+  "generic_extra_roots": ["~/Library/Application Support/SomeApp/sessions", "/abs/path"]
+}
 ```
 
-## 构建
+GenericAdapter 会对这些目录做启发式解析（`.jsonl` / `.json`，自动找 cwd/title/时间戳，ID 按路径命名空间保证唯一）。
+
+</details>
+
+## 快速开始
 
 ```bash
+# 开发模式（热更新）
+npm install
+npm run tauri dev
+
 # macOS 本地构建（跳过容易超时的 dmg 步骤，只出 .app）
 npx tauri build --bundles app
-scripts/make-dmg.sh      # 可选：手动打 .dmg
+scripts/make-dmg.sh        # 可选：手动打 .dmg
 
-# Windows 上直接 npx tauri build 即可（.msi / .exe）
+# Windows：直接 npx tauri build（.msi / .exe）
 ```
 
-产物在 `src-tauri/target/release/bundle/`。
-
-### GitHub Actions 跨平台发布
-
-`.github/workflows/release.yml`：推 `v*` tag（或手动触发）即在 macOS(arm64 + Intel) 和
-Windows 三个 runner 上并行构建，自动创建 Draft Release 并上传 `.dmg` / `.msi` / `.exe`：
-
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-> 注：tauri 内置的 dmg 打包步骤要调 Finder AppleScript 摆图标，在某些本地终端会话里会超时
-> （`AppleEvent已超时 -1712`），CI runner 上无此问题；本地需要 dmg 时跑 `scripts/make-dmg.sh`。
-
-### 签名说明
-
-- macOS：本地 ad-hoc 签名即可运行；分发 `.dmg` 时用户需在「系统设置 → 安全性」放行
-- Windows：无证书会触发 SmartScreen，建议先发 zip 版
-
-### 测试
+## 测试与门禁
 
 ```bash
 cd src-tauri
-cargo test                     # 默认：prune 安全矩阵 / WAL 扫描戳 / DSH raw 防护 / 流式解析等单元回归测试
-cargo test scan_real_machine_smoke -- --ignored --nocapture   # 可选：对本机真实 harness 目录的只读冒烟扫描
+cargo test                                             # 17 个单元回归测试
+cargo clippy --all-targets -- -D warnings              # lint 门禁
+cargo fmt --check                                      # 格式门禁
+cargo test scan_real_machine_smoke -- --ignored --nocapture   # 本机真实数据只读冒烟
 ```
+
+## 发布
+
+`.github/workflows/release.yml`：推 `v*` tag 即在 macOS（Apple Silicon + Intel）和 Windows 三个 runner 并行构建，自动创建 Draft Release 上传 `.dmg` / `.msi` / `.exe`：
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+> macOS 未签名应用需在「系统设置 → 隐私与安全性」放行；Windows 无证书会触发 SmartScreen，点「仍要运行」。
 
 ## Roadmap
 
 - [x] M0 脚手架（Tauri + React + IPC + SQLite）
 - [x] M1 核心 3 adapter：Claude Code / Codex / OpenCode
 - [x] M2 DSH / Zcode + 续接 + 备份导出
-- [x] M3 占位探测（Claude Desktop / Kimi / OpenClaw / Hermes）+ 标签备注收藏 + 实时状态
-- [x] M4 配置插件（adapters.json 自定义根目录）+ [adapter 开发文档](docs/ADAPTERS.md) + 打包发布（GitHub Actions）
-- [x] M5-lite token/费用统计面板（本地聚合，不联网）
+- [x] M3 占位探测 + 标签备注收藏 + 实时监听 + 扫描进度条
+- [x] M4 配置插件（adapters.json）+ adapter 开发文档 + CI 打包发布
+- [x] M5-lite 用量统计面板 + 刊例价费用估算
 - [ ] M5（可选）跨设备同步、AI 生成标题（需联网，与「本地优先」权衡后再定）
+
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:e8a33d,100:0d0c0a&height=120&section=footer" width="100%" />
+
+</div>
