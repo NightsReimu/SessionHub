@@ -45,11 +45,6 @@ pub trait HarnessAdapter: Send + Sync {
     fn launch_spec(&self, _s: &Session) -> Option<ResumeSpec> {
         None
     }
-    /// GUI 客户端候选 App 名（按优先级）。非空时「打开 Harness」优先
-    /// 拉起已安装的 GUI 应用，全部未安装才回退到 launch_spec 的终端命令。
-    fn gui_apps(&self) -> &'static [&'static str] {
-        &[]
-    }
     fn capabilities(&self) -> Capabilities;
     /// raw_path 是否指向该会话的独立存储（删除/备份/定位前必须检查）。
     /// 为 false 说明 raw_path 回退到了共享/全局文件，操作会误伤其它会话。

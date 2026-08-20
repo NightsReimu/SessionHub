@@ -49,6 +49,10 @@ impl Db {
                 note     TEXT NOT NULL DEFAULT '',
                 favorite INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(harness_id, session_id)
+            );
+            CREATE TABLE IF NOT EXISTS settings(
+                key   TEXT PRIMARY KEY,
+                value TEXT
             );",
         )?;
         // 迁移：旧库补 custom_title 列
@@ -133,6 +137,26 @@ impl Db {
              WHERE s.rowid=?1",
             params![rowid],
         );
+    }
+
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT value FROM settings WHERE key=?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> DbResult<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     /// 增量扫描用：已存在且 (size, mtime) 未变则跳过解析

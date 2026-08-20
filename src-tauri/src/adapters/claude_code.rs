@@ -102,8 +102,8 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         let mut last_ts: Option<i64> = None;
         let mut msg_count: u32 = 0;
         let mut first_user_text: Option<String> = None;
-        let mut tokens_in: u64 = 0;
-        let mut tokens_out: u64 = 0;
+        let mut model: Option<String> = None;
+        let (mut tin, mut tout, mut tcw, mut tcr) = (0u64, 0u64, 0u64, 0u64);
 
         let ok = for_each_jsonl_line(&raw.path, |v| {
             let ty = json_str(&v, "type").unwrap_or("");
@@ -144,11 +144,16 @@ impl HarnessAdapter for ClaudeCodeAdapter {
                 }
                 "assistant" => {
                     msg_count += 1;
-                    if let Some(u) = v.get("message").and_then(|m| m.get("usage")) {
-                        tokens_in += json_u64(u, "input_tokens").unwrap_or(0)
-                            + json_u64(u, "cache_creation_input_tokens").unwrap_or(0)
-                            + json_u64(u, "cache_read_input_tokens").unwrap_or(0);
-                        tokens_out += json_u64(u, "output_tokens").unwrap_or(0);
+                    if let Some(m) = v.get("message") {
+                        if model.is_none() {
+                            model = json_str(m, "model").map(|s| s.to_string());
+                        }
+                        if let Some(u) = m.get("usage") {
+                            tin += json_u64(u, "input_tokens").unwrap_or(0);
+                            tout += json_u64(u, "output_tokens").unwrap_or(0);
+                            tcw += json_u64(u, "cache_creation_input_tokens").unwrap_or(0);
+                            tcr += json_u64(u, "cache_read_input_tokens").unwrap_or(0);
+                        }
                     }
                 }
                 _ => {}
@@ -191,6 +196,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             .map(|n| n as u32)
             .or(if msg_count > 0 { Some(msg_count) } else { None });
 
+        let tokens_in = tin + tcw + tcr;
         Some(Session {
             session_id,
             harness_id: self.id().to_string(),
@@ -200,8 +206,8 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             ended_at: ended,
             message_count: count,
             tokens_in: if tokens_in > 0 { Some(tokens_in) } else { None },
-            tokens_out: if tokens_out > 0 { Some(tokens_out) } else { None },
-            cost_usd: None,
+            tokens_out: if tout > 0 { Some(tout) } else { None },
+            cost_usd: claude_cost(model.as_deref(), tin, tout, tcw, tcr),
             status: derive_status(raw.mtime_ms),
             raw_path: raw.path.to_string_lossy().into_owned(),
             source_format: "jsonl".to_string(),
@@ -266,6 +272,24 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     }
 }
 
+/// 按模型价格表估算费用（美元/百万 token：输入, 输出, 缓存写, 缓存读）。
+/// 与 ccusage 同一路径：token 数 × 公开刊例价。
+fn claude_cost(model: Option<&str>, tin: u64, tout: u64, tcw: u64, tcr: u64) -> Option<f64> {
+    if tin + tout + tcw + tcr == 0 {
+        return None;
+    }
+    let m = model.unwrap_or("").to_lowercase();
+    let (pi, po, pcw, pcr) = if m.contains("opus") {
+        (15.0, 75.0, 18.75, 1.5)
+    } else if m.contains("haiku") {
+        (1.0, 5.0, 1.25, 0.1)
+    } else {
+        (3.0, 15.0, 3.75, 0.3) // sonnet 系默认
+    };
+    let usd = (tin as f64 * pi + tout as f64 * po + tcw as f64 * pcw + tcr as f64 * pcr) / 1e6;
+    if usd > 0.0 { Some(usd) } else { None }
+}
+
 pub fn shell_quote(s: &str) -> String {
     if s.chars().all(|c| c.is_ascii_alphanumeric() || "-._/".contains(c)) {
         s.to_string()
@@ -298,7 +322,7 @@ mod tests {
                 r#"{"type":"user","cwd":"/tmp/proj","timestamp":"2026-01-01T00:00:01.000Z","sessionId":"sid-1","message":{"role":"user","content":[{"type":"text","text":"hello world"}]}}"#,
                 "\n",
                 "这不是 JSON，必须被跳过\n",
-                r#"{"type":"assistant","timestamp":"2026-01-01T00:00:02.000Z","sessionId":"sid-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":90}}}"#,
+                r#"{"type":"assistant","timestamp":"2026-01-01T00:00:02.000Z","sessionId":"sid-1","message":{"role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":90}}}"#,
                 "\n",
             ),
         )
@@ -312,6 +336,9 @@ mod tests {
         assert_eq!(s.message_count, Some(2));
         assert_eq!(s.tokens_in, Some(100));
         assert_eq!(s.tokens_out, Some(5));
+        // sonnet 刊例：10×$3/M + 5×$15/M + 90×$0.3/M = $0.000132
+        let cost = s.cost_usd.expect("应按价格表估算费用");
+        assert!((cost - 0.000132).abs() < 1e-9, "cost = {cost}");
         assert!(s.started_at.is_some());
         assert!(s.ended_at >= s.started_at);
         let msgs = a.read_messages(&s, 10);

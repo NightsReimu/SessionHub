@@ -4,6 +4,10 @@ use crate::adapters::{DetectCtx, HarnessAdapter};
 use crate::db::Db;
 use crate::models::{AdapterScanStat, ScanProgress, ScanReport};
 
+/// 解析器版本：解析逻辑产出字段发生变化（如新增费用估算）时 +1，
+/// 触发一次自动全量重扫，避免旧索引行长期缺失新字段
+const PARSE_VERSION: &str = "2";
+
 /// 扫描所有 adapter：enumerate → 增量跳过 → parse → upsert。
 /// full=true 时强制重解析，并清理索引里已不存在的会话。
 /// progress 为可选的进度回调（每 adapter 先枚举得到总数，之后每 25 条上报一次）。
@@ -15,6 +19,9 @@ pub fn scan_all(
     progress: Option<&dyn Fn(ScanProgress)>,
 ) -> ScanReport {
     let start = Instant::now();
+    // 解析器升级：强制一次全量，并允许 prune（仍受零错误护栏保护）
+    let parse_outdated = db.get_setting("parse_version").as_deref() != Some(PARSE_VERSION);
+    let full = full || parse_outdated;
     let mut stats = Vec::new();
     let adapter_count = adapters.iter().filter(|a| a.detect(ctx)).count();
     let mut adapter_index = 0usize;
@@ -66,33 +73,38 @@ pub fn scan_all(
         let mut seen_ids: Vec<String> = Vec::new();
         for (i, raw) in all_raws.into_iter().enumerate() {
             stat.scanned += 1;
-            // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
-            if !full {
-                if let Some(id) = raw.identity.as_deref() {
-                    if db.stamp(adapter.id(), id) == Some((raw.size, raw.mtime_ms)) {
-                        stat.skipped += 1;
-                        continue;
+            // 处理逻辑放进闭包，保证跳过/失败/成功所有分支都汇聚到
+            // 后面的统一进度上报点，而不是 continue 绕过回调
+            (|| {
+                // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
+                if !full {
+                    if let Some(id) = raw.identity.as_deref() {
+                        if db.stamp(adapter.id(), id) == Some((raw.size, raw.mtime_ms)) {
+                            stat.skipped += 1;
+                            return;
+                        }
                     }
                 }
-            }
-            let Ok(parsed_probe) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                adapter.parse(&raw)
-            })) else {
-                stat.errors += 1;
-                continue;
-            };
-            let Some(session) = parsed_probe else {
-                stat.errors += 1;
-                continue;
-            };
-            seen_ids.push(session.session_id.clone());
-            match db.upsert_session(&session) {
-                Ok(_) => stat.parsed += 1,
-                Err(e) => {
-                    eprintln!("[scan] upsert failed {}: {e}", session.session_id);
+                let Ok(parsed_probe) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    adapter.parse(&raw)
+                })) else {
                     stat.errors += 1;
+                    return;
+                };
+                let Some(session) = parsed_probe else {
+                    stat.errors += 1;
+                    return;
+                };
+                seen_ids.push(session.session_id.clone());
+                match db.upsert_session(&session) {
+                    Ok(_) => stat.parsed += 1,
+                    Err(e) => {
+                        eprintln!("[scan] upsert failed {}: {e}", session.session_id);
+                        stat.errors += 1;
+                    }
                 }
-            }
+            })();
+            // 统一的进度上报点：所有处理分支共用
             if let Some(p) = progress {
                 if (i + 1) % 25 == 0 || i + 1 == total {
                     p(ScanProgress {
@@ -119,6 +131,10 @@ pub fn scan_all(
     }
 
     let total = db.counts().map(|c| c.total).unwrap_or(0);
+    let any_errors = stats.iter().any(|s| s.errors > 0);
+    if !any_errors {
+        let _ = db.set_setting("parse_version", PARSE_VERSION);
+    }
     ScanReport {
         adapters: stats,
         total_sessions: total,

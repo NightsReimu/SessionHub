@@ -14,7 +14,6 @@ struct SqliteConfig {
     db_rel: &'static str,
     resume_command: &'static str,
     launch_command: &'static str,
-    gui_apps: &'static [&'static str],
     source_format: &'static str,
 }
 
@@ -24,7 +23,6 @@ const OPENCODE: SqliteConfig = SqliteConfig {
     db_rel: ".local/share/opencode/opencode.db",
     resume_command: "opencode --continue",
     launch_command: "opencode",
-    gui_apps: &["OpenCode"],
     source_format: "sqlite",
 };
 
@@ -34,7 +32,6 @@ const ZCODE: SqliteConfig = SqliteConfig {
     db_rel: ".zcode/cli/db/db.sqlite",
     resume_command: "zcode --continue",
     launch_command: "zcode",
-    gui_apps: &["ZCode", "Zcode"],
     source_format: "sqlite",
 };
 
@@ -287,9 +284,6 @@ macro_rules! sqlite_adapter {
                     command: $cfg.launch_command.to_string(),
                     cwd: non_empty(&s.project_path),
                 })
-            }
-            fn gui_apps(&self) -> &'static [&'static str] {
-                $cfg.gui_apps
             }
             fn capabilities(&self) -> Capabilities {
                 Capabilities {

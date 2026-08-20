@@ -194,6 +194,13 @@ impl HarnessAdapter for CodexAdapter {
                 .unwrap_or(stem)
         });
 
+        // GPT-5 系刊例价估算（输入 $1.25/M，输出 $10/M）
+        let cost = {
+            let usd = (tokens_in.unwrap_or(0) as f64 * 1.25 + tokens_out.unwrap_or(0) as f64 * 10.0)
+                / 1e6;
+            if usd > 0.0 { Some(usd) } else { None }
+        };
+
         Some(Session {
             session_id,
             harness_id: self.id().to_string(),
@@ -204,7 +211,7 @@ impl HarnessAdapter for CodexAdapter {
             message_count: if msg_count > 0 { Some(msg_count) } else { None },
             tokens_in,
             tokens_out,
-            cost_usd: None,
+            cost_usd: cost,
             status: if archived { "archived".to_string() } else { derive_status(raw.mtime_ms) },
             raw_path: raw.path.to_string_lossy().into_owned(),
             source_format: "jsonl".to_string(),
@@ -225,10 +232,6 @@ impl HarnessAdapter for CodexAdapter {
             command: "codex".to_string(),
             cwd: non_empty(&s.project_path),
         })
-    }
-
-    fn gui_apps(&self) -> &'static [&'static str] {
-        &["Codex"]
     }
 
     fn capabilities(&self) -> Capabilities {

@@ -128,16 +128,28 @@ impl HarnessAdapter for DshAdapter {
         let turns = row_val("sessionStats").and_then(|s| json_u64(s, "turns"));
 
         let (mut tin, mut tout) = (None, None);
+        let mut cost = None;
         if let Some(totals) = row_val("tokenUsage").and_then(|t| t.get("totals")) {
-            let i = json_u64(totals, "uncachedInputTokens").unwrap_or(0)
-                + json_u64(totals, "cacheReadTokens").unwrap_or(0)
-                + json_u64(totals, "cacheWriteTokens").unwrap_or(0);
-            let o = json_u64(totals, "outputTokens").unwrap_or(0);
+            let uncached = json_u64(totals, "uncachedInputTokens").unwrap_or(0);
+            let cache_read = json_u64(totals, "cacheReadTokens").unwrap_or(0);
+            let cache_write = json_u64(totals, "cacheWriteTokens").unwrap_or(0);
+            let output = json_u64(totals, "outputTokens").unwrap_or(0);
+            let i = uncached + cache_read + cache_write;
             if i > 0 {
                 tin = Some(i);
             }
-            if o > 0 {
-                tout = Some(o);
+            if output > 0 {
+                tout = Some(output);
+            }
+            // DeepSeek 刊例价估算（美元/百万 token）：
+            // 未命中输入 $0.27、缓存读 $0.07、缓存写 $0.27、输出 $1.10
+            let usd = (uncached as f64 * 0.27
+                + cache_read as f64 * 0.07
+                + cache_write as f64 * 0.27
+                + output as f64 * 1.10)
+                / 1e6;
+            if usd > 0.0 {
+                cost = Some(usd);
             }
         }
 
@@ -159,7 +171,7 @@ impl HarnessAdapter for DshAdapter {
             message_count: turns.map(|t| t as u32),
             tokens_in: tin,
             tokens_out: tout,
-            cost_usd: None,
+            cost_usd: cost,
             status: derive_status(updated.unwrap_or(raw.mtime_ms)),
             raw_path,
             source_format: "dsh-projcache".to_string(),

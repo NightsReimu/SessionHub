@@ -161,12 +161,6 @@ fn launch_harness(
     let adapter = state
         .adapter(&harness_id)
         .ok_or_else(|| format!("未知 harness：{harness_id}"))?;
-    // 有 GUI 客户端优先拉起；全部未安装才回退终端
-    for app in adapter.gui_apps() {
-        if let Ok(launched) = actions::open_gui_app_if_installed(app) {
-            return Ok(launched);
-        }
-    }
     let spec = adapter
         .launch_spec(&dto.session)
         .ok_or_else(|| "该 harness 不支持直接打开".to_string())?;
