@@ -1,6 +1,7 @@
 mod actions;
 mod adapters;
 mod db;
+mod migrate;
 mod models;
 mod scanner;
 mod watcher;
@@ -237,6 +238,32 @@ fn export_session(
     Ok(dest.to_string_lossy().into_owned())
 }
 
+/// 把会话迁移到另一个 harness：按目标原生格式生成会话文件，
+/// 目标 harness 用 resume_command 即可继续该对话
+#[tauri::command]
+fn migrate_session(
+    state: tauri::State<AppState>,
+    harness_id: String,
+    session_id: String,
+    target: String,
+) -> Result<migrate::MigrationResult, String> {
+    let dto = state
+        .db
+        .get_session(&harness_id, &session_id)
+        .ok_or_else(|| "会话不在索引中".to_string())?;
+    let adapter = state
+        .adapter(&harness_id)
+        .ok_or_else(|| format!("未知 harness：{harness_id}"))?;
+    if !adapter.capabilities().can_read_messages {
+        return Err("源 harness 不支持读取消息，无法迁移".to_string());
+    }
+    if dto.session.harness_id == target {
+        return Err("源和目标 harness 相同，无需迁移".to_string());
+    }
+    let messages = adapter.read_messages(&dto.session, 2000);
+    migrate::migrate(&dto.session, &messages, &target)
+}
+
 #[tauri::command]
 fn reveal_raw(
     state: tauri::State<AppState>,
@@ -339,6 +366,7 @@ pub fn run() {
             delete_session,
             backup_session,
             export_session,
+            migrate_session,
             reveal_raw,
             set_session_meta,
             get_counts,

@@ -26,6 +26,7 @@ thiserror = "1"
 parking_lot = "0.12"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 lto = true

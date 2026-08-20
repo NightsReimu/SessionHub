@@ -24,7 +24,7 @@
 
 <br/>
 
-把所有 AI 编程 harness 的会话——Claude Code、Codex、OpenCode、Zcode、DeepSeek Harness——**统一发现 → 浏览 → 搜索 → 续接 → 备份 / 清理**。本地优先，只读默认，跨平台原生窗口。
+把所有 AI 编程 harness 的会话——Claude Code、Codex、OpenCode、Zcode、DeepSeek Harness——**统一发现 → 浏览 → 搜索 → 续接 → 迁移 → 备份 / 清理**。本地优先，只读默认，跨平台原生窗口，玻璃拟态 UI + 彩色鼠标轨迹。
 
 ## 特性
 
@@ -84,8 +84,8 @@ notify 监听各 harness 根目录，去抖增量重扫，扫描进度实时可�
 </td>
 <td>
 
-**玻璃拟态 UI**
-半透明面板 + 背景流光 + 彩色鼠标轨迹，拒绝默认皮肤
+**会话迁移**
+把会话转换为目标 harness 的原生格式，直接在 Claude Code / Codex 里 resume 续接
 
 </td>
 </tr>

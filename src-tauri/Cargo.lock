@@ -3009,6 +3009,7 @@ dependencies = [
  "tauri-build",
  "thiserror 1.0.69",
  "trash",
+ "uuid",
  "walkdir",
  "zip",
  "zstd",

@@ -107,6 +107,12 @@ export interface HubPaths {
   db_path: string;
 }
 
+export interface MigrationResult {
+  path: string;
+  session_id: string;
+  resume_command: string;
+}
+
 // 元数据保存全局串行化：快速连续修改标签/收藏/备注时，
 // 保证请求按发起顺序落库，旧快照不可能覆盖新状态
 let metaSaveChain: Promise<unknown> = Promise.resolve();
@@ -129,6 +135,8 @@ export const api = {
     invoke<string>("backup_session", { harnessId, sessionId }),
   exportSession: (harnessId: string, sessionId: string, format: "md" | "jsonl") =>
     invoke<string>("export_session", { harnessId, sessionId, format }),
+  migrate: (harnessId: string, sessionId: string, target: string) =>
+    invoke<MigrationResult>("migrate_session", { harnessId, sessionId, target }),
   reveal: (harnessId: string, sessionId: string) =>
     invoke<string>("reveal_raw", { harnessId, sessionId }),
   setMeta: (harnessId: string, sessionId: string, meta: SessionMeta) => {

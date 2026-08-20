@@ -260,6 +260,32 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
           <button className={btn} disabled={busy} onClick={() => run(() => api.exportSession(session.harness_id, session.session_id, "jsonl"), "已导出 JSONL 到")}>
             导出 JSONL
           </button>
+          {caps?.can_read_messages && (
+            <select
+              className={btn + " appearance-none cursor-pointer"}
+              disabled={busy}
+              value=""
+              title="把该会话转换为目标 harness 的原生格式，可在目标 harness 中续接调用"
+              onChange={(e) => {
+                const target = e.target.value;
+                e.target.value = "";
+                if (!target) return;
+                run(async () => {
+                  const r = await api.migrate(session.harness_id, session.session_id, target);
+                  return `${r.path}\n在 ${target} 中运行：${r.resume_command}`;
+                }, "已迁移");
+              }}
+            >
+              <option value="">迁移到…</option>
+              {["claude-code", "codex"]
+                .filter((t) => t !== session.harness_id)
+                .map((t) => (
+                  <option key={t} value={t} className="bg-zinc-900">
+                    {t === "claude-code" ? "Claude Code" : "Codex"}
+                  </option>
+                ))}
+            </select>
+          )}
           <button
             className={btn + " text-red-400 hover:bg-red-950/60"}
             disabled={busy || !caps?.can_delete || !rawOk}
