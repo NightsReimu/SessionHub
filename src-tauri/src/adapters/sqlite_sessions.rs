@@ -15,6 +15,8 @@ struct SqliteConfig {
     resume_command: &'static str,
     launch_command: &'static str,
     source_format: &'static str,
+    /// session 表没有 cost/tokens 列时，是否从 model_usage 表聚合（zcode）
+    usage_pricing: bool,
 }
 
 const OPENCODE: SqliteConfig = SqliteConfig {
@@ -24,6 +26,7 @@ const OPENCODE: SqliteConfig = SqliteConfig {
     resume_command: "opencode --continue",
     launch_command: "opencode",
     source_format: "sqlite",
+    usage_pricing: false,
 };
 
 const ZCODE: SqliteConfig = SqliteConfig {
@@ -33,7 +36,72 @@ const ZCODE: SqliteConfig = SqliteConfig {
     resume_command: "zcode --continue",
     launch_command: "zcode",
     source_format: "sqlite",
+    usage_pricing: true,
 };
+
+/// 按模型族刊例价估算（美元/百万 token：输入, 输出, 缓存读；缓存写按输入价）。
+/// 自定义 provider 的模型按同代公开价取近似档。
+fn family_price(model: &str) -> (f64, f64, f64) {
+    let m = model.to_lowercase();
+    if m.contains("deepseek") {
+        (0.27, 1.10, 0.07)
+    } else if m.contains("kimi") {
+        (0.60, 2.50, 0.15)
+    } else if m.contains("grok") {
+        (3.0, 15.0, 0.75)
+    } else if m.contains("glm") {
+        (0.60, 2.20, 0.15)
+    } else if m.contains("qwen") {
+        (0.20, 0.60, 0.05)
+    } else {
+        (1.0, 4.0, 0.25) // 未知模型的保守通用价
+    }
+}
+
+/// 从 model_usage 按 session 聚合 token 与估算费用（zcode 的 session 表没有这些列）
+fn aggregate_usage(
+    conn: &Connection,
+) -> std::collections::HashMap<String, (u64, u64, u64, u64, u64, f64)> {
+    let mut map = std::collections::HashMap::new();
+    if !table_exists(conn, "model_usage") {
+        return map;
+    }
+    let sql = "SELECT session_id, model_id, \
+               SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), \
+               SUM(cache_creation_input_tokens), SUM(cache_read_input_tokens) \
+               FROM model_usage GROUP BY session_id, model_id";
+    let Ok(mut stmt) = conn.prepare(sql) else { return map };
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+            r.get::<_, i64>(6)?,
+        ))
+    });
+    let Ok(rows) = rows else { return map };
+    for r in rows.flatten() {
+        let (sid, model, input, output, reasoning, cache_w, cache_r) = r;
+        let (pi, po, pcr) = family_price(&model);
+        let cost = (input.max(0) as f64 * pi
+            + output.max(0) as f64 * po
+            + reasoning.max(0) as f64 * po
+            + cache_w.max(0) as f64 * pi
+            + cache_r.max(0) as f64 * pcr)
+            / 1e6;
+        let e = map.entry(sid).or_insert((0, 0, 0, 0, 0, 0.0));
+        e.0 += input.max(0) as u64;
+        e.1 += output.max(0) as u64;
+        e.2 += reasoning.max(0) as u64;
+        e.3 += cache_w.max(0) as u64;
+        e.4 += cache_r.max(0) as u64;
+        e.5 += cost;
+    }
+    map
+}
 
 pub struct OpenCodeAdapter;
 pub struct ZcodeAdapter;
@@ -62,7 +130,7 @@ fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
+fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
     let mut errors = 0usize;
     let Some(conn) = open_ro(db_path) else {
         return (Vec::new(), 1);
@@ -95,6 +163,13 @@ fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
             }
         }
     }
+
+    // session 表没有用量列时（zcode），从 model_usage 聚合 token 与估算费用
+    let usage = if cfg.usage_pricing {
+        aggregate_usage(&conn)
+    } else {
+        std::collections::HashMap::new()
+    };
 
     let mut out = Vec::new();
     // 扫描戳要感知 WAL：SQLite 的写入先进 *.db-wal，主 .db 的 size/mtime 可能长期不变
@@ -149,6 +224,38 @@ fn enumerate_db(_cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
                                         row.as_object_mut().map(|m| {
                                             m.insert("message_count".into(), (*c).into())
                                         });
+                                    }
+                                    // 注入聚合用量：仅在 session 行本身缺省时
+                                    if let Some(u) = usage.get(id) {
+                                        let missing = |k: &str| {
+                                            row.get(k)
+                                                .map(|v| v.is_null() || v.as_f64() == Some(0.0))
+                                                .unwrap_or(true)
+                                        };
+                                        let mut updates: Vec<(&str, serde_json::Value)> = Vec::new();
+                                        if missing("tokens_input") {
+                                            updates.push(("tokens_input", u.0.into()));
+                                        }
+                                        if missing("tokens_output") {
+                                            updates.push(("tokens_output", u.1.into()));
+                                        }
+                                        if missing("tokens_reasoning") {
+                                            updates.push(("tokens_reasoning", u.2.into()));
+                                        }
+                                        if missing("tokens_cache_write") {
+                                            updates.push(("tokens_cache_write", u.3.into()));
+                                        }
+                                        if missing("tokens_cache_read") {
+                                            updates.push(("tokens_cache_read", u.4.into()));
+                                        }
+                                        if missing("cost") && u.5 > 0.0 {
+                                            updates.push(("cost", serde_json::Value::from(u.5)));
+                                        }
+                                        if let Some(m) = row.as_object_mut() {
+                                            for (k, v) in updates {
+                                                m.insert(k.to_string(), v);
+                                            }
+                                        }
                                     }
                                 }
                                 out.push(RawRef {
@@ -357,6 +464,52 @@ mod tests {
         let s = adapter.parse(&raws2[0]).unwrap();
         assert_eq!(s.session_id, "s1");
         assert_eq!(s.title, "t1");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// zcode 模式：session 表无用量列时，从 model_usage 聚合 token 并按族刊例价估算费用
+    #[test]
+    fn usage_aggregated_from_model_usage() {
+        let dir = std::env::temp_dir().join(format!("sh-zusage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dbp = dir.join("db.sqlite");
+        {
+            let conn = Connection::open(&dbp).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE session(
+                    id text primary key, directory text not null default '',
+                    title text not null default '',
+                    time_created integer not null default 0,
+                    time_updated integer not null default 0);
+                 CREATE TABLE model_usage(
+                    id text primary key, session_id text not null,
+                    model_id text not null,
+                    input_tokens integer not null default 0,
+                    output_tokens integer not null default 0,
+                    reasoning_tokens integer not null default 0,
+                    cache_creation_input_tokens integer not null default 0,
+                    cache_read_input_tokens integer not null default 0);
+                 INSERT INTO session(id, title) VALUES ('s1', 't1');
+                 INSERT INTO model_usage(id, session_id, model_id, input_tokens, output_tokens, cache_read_input_tokens)
+                 VALUES ('m1', 's1', 'deepseek-v4-flash', 1000000, 100000, 2000000),
+                        ('m2', 's1', 'deepseek-v4-flash', 500000, 50000, 0);",
+            )
+            .unwrap();
+        }
+        let (raws, errs) = enumerate_db(&ZCODE, &dbp);
+        assert_eq!(errs, 0);
+        assert_eq!(raws.len(), 1);
+        let adapter = ZcodeAdapter;
+        let s = adapter.parse(&raws[0]).unwrap();
+        assert_eq!(s.session_id, "s1");
+        // tokens_in = 1.5M input + 2M cache_read；tokens_out = 150K
+        assert_eq!(s.tokens_in, Some(3_500_000));
+        assert_eq!(s.tokens_out, Some(150_000));
+        // deepseek 刊例：1.5M×$0.27 + 150K×$1.10 + 2M×$0.07 = $0.71
+        let cost = s.cost_usd.expect("应估算费用");
+        assert!((cost - 0.71).abs() < 1e-6, "cost = {cost}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

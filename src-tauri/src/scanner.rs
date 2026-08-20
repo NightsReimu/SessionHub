@@ -6,7 +6,7 @@ use crate::models::{AdapterScanStat, ScanProgress, ScanReport};
 
 /// 解析器版本：解析逻辑产出字段发生变化（如新增费用估算）时 +1，
 /// 触发一次自动全量重扫，避免旧索引行长期缺失新字段
-const PARSE_VERSION: &str = "2";
+const PARSE_VERSION: &str = "3";
 
 /// 扫描所有 adapter：enumerate → 增量跳过 → parse → upsert。
 /// full=true 时强制重解析，并清理索引里已不存在的会话。
