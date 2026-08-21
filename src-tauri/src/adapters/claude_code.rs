@@ -224,17 +224,21 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     }
 
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
-        Some(ResumeSpec {
-            command: format!("claude --resume {}", shell_quote(&s.session_id)),
-            cwd: non_empty(&s.project_path),
-        })
+        Some(ResumeSpec::new(
+            vec![
+                "claude".to_string(),
+                "--resume".to_string(),
+                s.session_id.clone(),
+            ],
+            non_empty(&s.project_path),
+        ))
     }
 
     fn launch_spec(&self, s: &Session) -> Option<ResumeSpec> {
-        Some(ResumeSpec {
-            command: "claude".to_string(),
-            cwd: non_empty(&s.project_path),
-        })
+        Some(ResumeSpec::new(
+            vec!["claude".to_string()],
+            non_empty(&s.project_path),
+        ))
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -316,16 +320,6 @@ fn claude_cost(by_model: &std::collections::HashMap<String, (u64, u64, u64, u64)
         Some(usd)
     } else {
         None
-    }
-}
-
-pub fn shell_quote(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-._/".contains(c))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
     }
 }
 

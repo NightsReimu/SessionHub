@@ -186,17 +186,17 @@ impl HarnessAdapter for DshAdapter {
     }
 
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
-        Some(ResumeSpec {
-            command: "dsh".to_string(),
-            cwd: non_empty(&s.project_path),
-        })
+        Some(ResumeSpec::new(
+            vec!["dsh".to_string()],
+            non_empty(&s.project_path),
+        ))
     }
 
     fn launch_spec(&self, s: &Session) -> Option<ResumeSpec> {
-        Some(ResumeSpec {
-            command: "dsh".to_string(),
-            cwd: non_empty(&s.project_path),
-        })
+        Some(ResumeSpec::new(
+            vec!["dsh".to_string()],
+            non_empty(&s.project_path),
+        ))
     }
 
     fn capabilities(&self) -> Capabilities {

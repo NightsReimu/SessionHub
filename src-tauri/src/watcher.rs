@@ -60,8 +60,15 @@ pub fn start(
     std::thread::spawn(move || loop {
         match rx.recv_timeout(Duration::from_millis(800)) {
             Ok(_) => {
-                // 去抖：排空积压事件
-                while rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+                // 去抖：排空积压事件，但设总时长上限。会话活跃写入时事件间隔
+                // 可能持续小于 200ms，无上限会让内层循环永不退出、扫描永不触发
+                // （界面恰在最该刷新时停止更新）。
+                let drain_deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while rx.recv_timeout(Duration::from_millis(200)).is_ok() {
+                    if std::time::Instant::now() >= drain_deadline {
+                        break;
+                    }
+                }
                 let _scan_guard = scan_lock.lock();
                 let report = scan_all(
                     &db,

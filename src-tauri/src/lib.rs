@@ -14,6 +14,10 @@ use adapters::{all_adapters, DetectCtx, HarnessAdapter};
 use db::Db;
 use models::*;
 
+/// 源 adapter 不支持完整读取时，导出的兜底上限。取值远高于常规会话长度，
+/// 达到上限即视为可能截断并在导出内容中标注。
+const EXPORT_FALLBACK_LIMIT: usize = 100_000;
+
 pub struct AppState {
     db: Arc<Db>,
     adapters: Arc<Vec<Box<dyn HarnessAdapter>>>,
@@ -162,7 +166,7 @@ fn resume_session(
     let spec = adapter
         .resume_spec(&dto.session)
         .ok_or_else(|| "该 harness 暂不支持续接".to_string())?;
-    actions::launch_in_terminal(&spec.command, spec.cwd.as_deref())
+    actions::launch_in_terminal(&spec.argv, spec.cwd.as_deref())
 }
 
 #[tauri::command]
@@ -181,7 +185,7 @@ fn launch_harness(
     let spec = adapter
         .launch_spec(&dto.session)
         .ok_or_else(|| "该 harness 不支持直接打开".to_string())?;
-    actions::launch_in_terminal(&spec.command, spec.cwd.as_deref())
+    actions::launch_in_terminal(&spec.argv, spec.cwd.as_deref())
 }
 
 #[tauri::command]
@@ -232,11 +236,26 @@ fn export_session(
         .db
         .get_session(&harness_id, &session_id)
         .ok_or_else(|| "会话不在索引中".to_string())?;
-    let messages = state
-        .adapter(&harness_id)
-        .map(|a| a.read_messages(&dto.session, 500))
-        .unwrap_or_default();
-    let dest = actions::export_session(&dto.session, &messages, &format, dest_path.as_deref())?;
+    // 导出必须完整：优先不截断读取。仅当源 adapter 不支持完整读取时才退回
+    // 上限读取，并把“可能被截断”如实标注进导出文件，绝不让用户以为拿到了全量备份。
+    let (messages, complete) = match state.adapter(&harness_id) {
+        Some(a) => match a.read_messages_full(&dto.session) {
+            Some(all) => (all, true),
+            None => {
+                let capped = a.read_messages(&dto.session, EXPORT_FALLBACK_LIMIT);
+                let complete = capped.len() < EXPORT_FALLBACK_LIMIT;
+                (capped, complete)
+            }
+        },
+        None => (Vec::new(), true),
+    };
+    let dest = actions::export_session(
+        &dto.session,
+        &messages,
+        &format,
+        dest_path.as_deref(),
+        complete,
+    )?;
     Ok(dest.to_string_lossy().into_owned())
 }
 
@@ -349,10 +368,25 @@ fn watcher_status(state: tauri::State<AppState>) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = actions::ensure_hub_dirs();
+    if let Err(e) = actions::ensure_hub_dirs() {
+        eprintln!(
+            "警告：无法创建 SessionHub 目录 {}：{e}",
+            actions::hub_dir().display()
+        );
+    }
     let db_path = actions::hub_dir().join("sessionhub.db");
-    let db = Db::open(&db_path)
-        .unwrap_or_else(|e| panic!("无法打开 SessionHub 数据库 {}: {e}", db_path.display()));
+    // 打不开数据库时给出可读诊断再退出，而不是抛 panic 让用户只看到闪退
+    let db = match Db::open(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!(
+                "错误：无法打开 SessionHub 数据库 {}：{e}\n\
+                 请确认该路径可写、磁盘未满，或删除损坏的数据库文件后重试。",
+                db_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
 
     let state = AppState {
         db: Arc::new(db),

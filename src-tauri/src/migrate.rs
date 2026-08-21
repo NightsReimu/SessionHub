@@ -45,30 +45,31 @@ fn iso(ms: Option<i64>) -> String {
 }
 
 /// 原子写入：先写同目录临时文件再 rename，
-/// 避免 watcher 扫到半成品、进程中断留下损坏文件
+/// 避免 watcher 扫到半成品、进程中断留下损坏文件。
+/// 临时名带目标文件名 + pid + 随机后缀：同目录多目标并发写不会互相覆盖。
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let tmp = path.with_file_name(format!(".sessionhub-tmp-{}", std::process::id()));
-    std::fs::write(&tmp, content).map_err(|e| format!("写入临时文件失败：{e}"))?;
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Windows rename 不能覆盖已存在目标：先删再换
-            if path.exists() {
-                std::fs::remove_file(path).map_err(|e2| {
-                    let _ = std::fs::remove_file(&tmp);
-                    format!("删除旧文件失败：{e2}")
-                })?;
-                std::fs::rename(&tmp, path).map_err(|e2| {
-                    let _ = std::fs::remove_file(&tmp);
-                    format!("替换目标文件失败：{e2}")
-                })?;
-                Ok(())
-            } else {
-                let _ = std::fs::remove_file(&tmp);
-                Err(format!("写入目标文件失败：{e}"))
-            }
-        }
+    let stem = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "target".to_string());
+    let tmp = path.with_file_name(format!(
+        ".sessionhub-tmp-{}-{}-{}",
+        stem,
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    // 显式 fsync：rename 本身原子，但不保证内容已落盘
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败：{e}"))?;
+        f.write_all(content.as_bytes())
+            .map_err(|e| format!("写入临时文件失败：{e}"))?;
+        f.sync_all().map_err(|e| format!("刷盘失败：{e}"))?;
     }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("替换目标文件失败：{e}")
+    })
 }
 
 fn norm_role(role: &str) -> &str {
@@ -206,6 +207,18 @@ fn migrate_to_claude(
     })
 }
 
+/// 索引文件的并发标识：(mtime_ms, len)。用于写回前确认文件未被他人改动。
+fn index_stamp(path: &Path) -> Option<(i64, u64)> {
+    let md = std::fs::metadata(path).ok()?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Some((mtime, md.len()))
+}
+
 fn update_claude_index(
     dir: &Path,
     full_path: &Path,
@@ -214,41 +227,65 @@ fn update_claude_index(
     messages: &[MessagePreview],
 ) -> Result<(), String> {
     let index_path = dir.join("sessions-index.json");
-    // 已存在但暂时解析失败（损坏/并发写入中）→ 明确报错，绝不用空索引覆盖原文件
-    let mut v = if index_path.exists() {
-        let text =
-            std::fs::read_to_string(&index_path).map_err(|e| format!("读取索引失败：{e}"))?;
-        match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(v) => v,
-            Err(e) => return Err(format!("索引暂时不可解析，已保留原文件：{e}")),
+    // Claude Code 本身可能正在运行并写同一个索引。原子 rename 只能保证不写出
+    // 半成品，防不住“丢更新”：读到写回之间对方的追加会被整体覆盖。
+    // 因此做 compare-and-swap —— 写回前复核 (mtime, len)，变了就重做整个
+    // 读-改-写；连续冲突则放弃并如实报错，绝不盲写。
+    const MAX_ATTEMPTS: usize = 3;
+    let mut last_conflict = String::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        let before = index_stamp(&index_path);
+        // 已存在但暂时解析失败（损坏/并发写入中）→ 明确报错，绝不用空索引覆盖原文件
+        let mut v = if index_path.exists() {
+            let text =
+                std::fs::read_to_string(&index_path).map_err(|e| format!("读取索引失败：{e}"))?;
+            match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(v) => v,
+                Err(e) => return Err(format!("索引暂时不可解析，已保留原文件：{e}")),
+            }
+        } else {
+            serde_json::json!({"version": 1, "entries": []})
+        };
+        let Some(entries) = v.get_mut("entries").and_then(|e| e.as_array_mut()) else {
+            return Err("索引结构异常（缺少 entries 数组），已保留原文件".to_string());
+        };
+        // 幂等：同一 sessionId 已在索引里就不再追加，避免重复迁移堆积重复条目
+        let already = entries
+            .iter()
+            .any(|e| e.get("sessionId").and_then(|x| x.as_str()) == Some(id));
+        if already {
+            return Ok(());
         }
-    } else {
-        serde_json::json!({"version": 1, "entries": []})
-    };
-    let Some(entries) = v.get_mut("entries").and_then(|e| e.as_array_mut()) else {
-        return Err("索引结构异常（缺少 entries 数组），已保留原文件".to_string());
-    };
-    let first_prompt = messages
-        .iter()
-        .find(|m| m.role == "user")
-        .map(|m| m.text.chars().take(80).collect::<String>())
-        .unwrap_or_default();
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    entries.push(serde_json::json!({
-        "sessionId": id,
-        "fullPath": full_path.to_string_lossy(),
-        "fileMtime": now_ms,
-        "firstPrompt": first_prompt,
-        "summary": format!("（迁移自 {}）{}", session.harness_id, session.title),
-        "messageCount": messages.len(),
-        "created": iso(session.started_at),
-        "modified": iso(session.ended_at),
-        "gitBranch": "",
-        "projectPath": session.project_path,
-        "isSidechain": false,
-    }));
-    let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
-    atomic_write(&index_path, &text)
+        let first_prompt = messages
+            .iter()
+            .find(|m| m.role == "user")
+            .map(|m| m.text.chars().take(80).collect::<String>())
+            .unwrap_or_default();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        entries.push(serde_json::json!({
+            "sessionId": id,
+            "fullPath": full_path.to_string_lossy(),
+            "fileMtime": now_ms,
+            "firstPrompt": first_prompt,
+            "summary": format!("（迁移自 {}）{}", session.harness_id, session.title),
+            "messageCount": messages.len(),
+            "created": iso(session.started_at),
+            "modified": iso(session.ended_at),
+            "gitBranch": "",
+            "projectPath": session.project_path,
+            "isSidechain": false,
+        }));
+        let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+        // 写回前复核：期间被改动就重试，避免覆盖他人的并发追加
+        if index_stamp(&index_path) != before {
+            last_conflict = format!("第 {attempt} 次尝试期间索引被其它进程修改");
+            continue;
+        }
+        return atomic_write(&index_path, &text);
+    }
+    Err(format!(
+        "索引被并发修改且重试 {MAX_ATTEMPTS} 次仍冲突（{last_conflict}），已保留原文件"
+    ))
 }
 
 // ---------------- OpenCode / Zcode 目标（共享 SQLite，事务写入） ----------------
@@ -401,6 +438,75 @@ mod tests {
     use super::*;
     use crate::adapters::util::file_raw_ref;
     use crate::adapters::{claude_code::ClaudeCodeAdapter, codex::CodexAdapter, HarnessAdapter};
+
+    /// 回归：同一 sessionId 重复写索引必须幂等，不堆积重复条目；
+    /// 且并发 stamp 未变时正常写入。
+    #[test]
+    fn claude_index_append_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("sh-idx-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = Session {
+            session_id: "src-1".to_string(),
+            harness_id: "codex".to_string(),
+            project_path: "/tmp/proj".to_string(),
+            title: "t".to_string(),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_100_000),
+            message_count: Some(2),
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            status: "idle".to_string(),
+            raw_path: dir.join("x.jsonl").to_string_lossy().into_owned(),
+            source_format: "jsonl".to_string(),
+            file_size: 0,
+            file_mtime: 0,
+        };
+        let msgs = fake_messages();
+        let full = dir.join("abc.jsonl");
+
+        update_claude_index(&dir, &full, "abc", &session, &msgs).unwrap();
+        // 第二次同 id：应直接返回且不新增条目
+        update_claude_index(&dir, &full, "abc", &session, &msgs).unwrap();
+        // 不同 id：应新增
+        update_claude_index(&dir, &full, "def", &session, &msgs).unwrap();
+
+        let text = std::fs::read_to_string(dir.join("sessions-index.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let entries = v.get("entries").unwrap().as_array().unwrap();
+        assert_eq!(entries.len(), 2, "重复 sessionId 不应堆积：{entries:?}");
+        let ids: Vec<&str> = entries
+            .iter()
+            .map(|e| e.get("sessionId").unwrap().as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["abc", "def"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回归：同目录下两个不同目标并发写，临时文件名不得互相覆盖。
+    #[test]
+    fn atomic_write_distinct_targets_do_not_collide() {
+        let dir = std::env::temp_dir().join(format!("sh-aw-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.json");
+        let b = dir.join("b.json");
+        atomic_write(&a, "content-a").unwrap();
+        atomic_write(&b, "content-b").unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "content-a");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "content-b");
+        // 临时文件不得残留
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".sessionhub-tmp-")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件：{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn fake_messages() -> Vec<MessagePreview> {
         vec![

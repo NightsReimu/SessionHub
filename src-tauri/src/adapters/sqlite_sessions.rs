@@ -12,8 +12,10 @@ struct SqliteConfig {
     id: &'static str,
     name: &'static str,
     db_rel: &'static str,
-    resume_command: &'static str,
-    launch_command: &'static str,
+    /// resume 的 argv 模板；元素恰为 `{id}` 时替换为会话 id。
+    /// 用 argv 而非命令字符串，避免会话 id 被 shell 解释。
+    resume_argv: &'static [&'static str],
+    launch_argv: &'static [&'static str],
     source_format: &'static str,
     /// session 表没有 cost/tokens 列时，是否从 model_usage 表聚合（zcode）
     usage_pricing: bool,
@@ -23,8 +25,8 @@ const OPENCODE: SqliteConfig = SqliteConfig {
     id: "opencode",
     name: "OpenCode",
     db_rel: ".local/share/opencode/opencode.db",
-    resume_command: "opencode --session {id}",
-    launch_command: "opencode",
+    resume_argv: &["opencode", "--session", "{id}"],
+    launch_argv: &["opencode"],
     source_format: "sqlite",
     usage_pricing: false,
 };
@@ -34,11 +36,25 @@ const ZCODE: SqliteConfig = SqliteConfig {
     name: "Zcode",
     db_rel: ".zcode/cli/db/db.sqlite",
     // zcode CLI 没有按会话恢复的参数（zcode --help 实测），只能启动 TUI
-    resume_command: "zcode",
-    launch_command: "zcode",
+    resume_argv: &["zcode"],
+    launch_argv: &["zcode"],
     source_format: "sqlite",
     usage_pricing: true,
 };
+
+/// 展开 argv 模板：值恰为 `{id}` 的元素替换成会话 id，其余原样保留。
+fn expand_argv(template: &[&str], session_id: &str) -> Vec<String> {
+    template
+        .iter()
+        .map(|a| {
+            if *a == "{id}" {
+                session_id.to_string()
+            } else {
+                (*a).to_string()
+            }
+        })
+        .collect()
+}
 
 /// 按模型族刊例价估算（美元/百万 token：输入, 输出, 缓存读；缓存写按输入价）。
 /// 自定义 provider 的模型按同代公开价取近似档。
@@ -431,17 +447,18 @@ macro_rules! sqlite_adapter {
                 parse_row(&$cfg, raw)
             }
             fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
-                Some(ResumeSpec {
-                    // {id} 占位符替换为会话 id（opencode --session）；无占位符则原样
-                    command: $cfg.resume_command.replace("{id}", &s.session_id),
-                    cwd: non_empty(&s.project_path),
-                })
+                Some(ResumeSpec::new(
+                    // `{id}` 占位元素替换为会话 id；无占位符则原样。逐元素替换而非
+                    // 字符串拼接，会话 id 中的元字符不可能逃逸成命令。
+                    expand_argv($cfg.resume_argv, &s.session_id),
+                    non_empty(&s.project_path),
+                ))
             }
             fn launch_spec(&self, s: &Session) -> Option<ResumeSpec> {
-                Some(ResumeSpec {
-                    command: $cfg.launch_command.to_string(),
-                    cwd: non_empty(&s.project_path),
-                })
+                Some(ResumeSpec::new(
+                    expand_argv($cfg.launch_argv, &s.session_id),
+                    non_empty(&s.project_path),
+                ))
             }
             fn capabilities(&self) -> Capabilities {
                 Capabilities {

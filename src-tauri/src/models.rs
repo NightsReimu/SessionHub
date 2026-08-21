@@ -54,9 +54,43 @@ pub struct Capabilities {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResumeSpec {
-    /// 在 shell 中执行的完整命令，例如 `claude --resume <id>`
+    /// 仅用于展示/回显的命令文本，例如 `claude --resume <id>`。
+    /// 绝不能把它交给 shell 执行——执行一律走 `argv`。
     pub command: String,
+    /// 真正执行用的 argv（program + 参数）。由调用方逐元素按目标平台引用规则
+    /// 转义，避免会话 id、路径中的 shell 元字符被解释成命令。
+    pub argv: Vec<String>,
     pub cwd: Option<String>,
+}
+
+impl ResumeSpec {
+    /// 由 argv 构造；`command` 逐元素 POSIX 引用后拼出，仅供展示。
+    pub fn new(argv: Vec<String>, cwd: Option<String>) -> Self {
+        let command = argv
+            .iter()
+            .map(|a| posix_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Self { command, argv, cwd }
+    }
+}
+
+/// POSIX shell 单引号转义：安全字符原样输出，其余整体单引号包裹并转义内部单引号。
+pub fn posix_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-._/".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// PowerShell 单引号转义：单引号字符串内除 `'` 本身外无转义语义，`'` 写作 `''`。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn powershell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 /// 一个待解析的原始对象。对文件型 harness 就是磁盘上的文件；
@@ -154,4 +188,56 @@ pub struct StatsOverview {
     pub per_harness: Vec<HarnessStat>,
     /// 按 token 消耗排序的会话（含 meta，可直接跳转）
     pub top_sessions: Vec<SessionDto>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn posix_quote_neutralizes_metacharacters() {
+        // 安全字符原样保留
+        assert_eq!(posix_quote("ses_abc-123.jsonl"), "ses_abc-123.jsonl");
+        assert_eq!(posix_quote("/tmp/a/b"), "/tmp/a/b");
+        // 空串必须被引用，否则会在命令行里消失
+        assert_eq!(posix_quote(""), "''");
+        // shell 元字符一律被单引号包裹
+        for raw in ["a&calc", "a|b", "a;b", "a$(id)", "a`id`", "a b", "a>b"] {
+            let q = posix_quote(raw);
+            assert!(
+                q.starts_with('\'') && q.ends_with('\''),
+                "未引用：{raw} -> {q}"
+            );
+        }
+        // 内部单引号按 POSIX 规则转义
+        assert_eq!(posix_quote("it's"), r#"'it'\''s'"#);
+    }
+
+    #[test]
+    fn powershell_quote_escapes_single_quotes() {
+        assert_eq!(powershell_quote("plain"), "'plain'");
+        // cmd.exe 会把 & 当分隔符；PowerShell 单引号内它是普通字符
+        assert_eq!(powershell_quote("a&calc"), "'a&calc'");
+        assert_eq!(powershell_quote("it's"), "'it''s'");
+    }
+
+    /// 回归：会话 id 含 shell 元字符时，argv 必须逐元素保留原值，
+    /// 且展示用 command 必须是已引用的形式（绝不能拼出可注入的裸串）。
+    #[test]
+    fn resume_spec_keeps_argv_verbatim_and_quotes_display() {
+        let evil = "abc&calc";
+        let spec = ResumeSpec::new(
+            vec![
+                "claude".to_string(),
+                "--resume".to_string(),
+                evil.to_string(),
+            ],
+            Some("/tmp/proj dir".to_string()),
+        );
+        // argv 是执行的唯一来源：原值不被改写、不被合并
+        assert_eq!(spec.argv, vec!["claude", "--resume", evil]);
+        // 展示串里元字符必须处于引号内
+        assert_eq!(spec.command, "claude --resume 'abc&calc'");
+        assert!(!spec.command.contains("resume abc&calc"));
+    }
 }

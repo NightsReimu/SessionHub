@@ -208,10 +208,15 @@ impl Db {
         offset: usize,
     ) -> DbResult<Vec<SessionDto>> {
         let conn = self.conn.lock();
+        // 声明在 binds 之前，保证借用存活到 query_map
+        let harness_bind = harness;
         let mut sql = format!("SELECT {} FROM sessions", Self::SESSION_COLS);
         let mut conds: Vec<String> = Vec::new();
-        if let Some(h) = harness {
-            conds.push(format!("harness_id = '{}'", h.replace('\'', "''")));
+        let mut binds: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        if let Some(h) = harness_bind.as_ref() {
+            // 绑定参数而非字符串拼接：harness 来自前端，不手写转义
+            conds.push("harness_id = ?".to_string());
+            binds.push(h);
         }
         if favorites_only {
             conds.push(
@@ -228,7 +233,7 @@ impl Db {
             limit, offset
         ));
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], Self::row_to_session)?;
+        let rows = stmt.query_map(binds.as_slice(), Self::row_to_session)?;
         let mut out = Vec::new();
         for s in rows.flatten() {
             let meta = Self::get_meta_conn(&conn, &s.harness_id, &s.session_id);

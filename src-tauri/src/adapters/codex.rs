@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::claude_code::{non_empty, shell_quote};
+use super::claude_code::non_empty;
 use super::util::*;
 use super::{DetectCtx, HarnessAdapter};
 use crate::models::{Capabilities, MessagePreview, RawRef, ResumeSpec, Session};
@@ -236,17 +236,21 @@ impl HarnessAdapter for CodexAdapter {
     }
 
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
-        Some(ResumeSpec {
-            command: format!("codex resume {}", shell_quote(&s.session_id)),
-            cwd: non_empty(&s.project_path),
-        })
+        Some(ResumeSpec::new(
+            vec![
+                "codex".to_string(),
+                "resume".to_string(),
+                s.session_id.clone(),
+            ],
+            non_empty(&s.project_path),
+        ))
     }
 
     fn launch_spec(&self, s: &Session) -> Option<ResumeSpec> {
-        Some(ResumeSpec {
-            command: "codex".to_string(),
-            cwd: non_empty(&s.project_path),
-        })
+        Some(ResumeSpec::new(
+            vec!["codex".to_string()],
+            non_empty(&s.project_path),
+        ))
     }
 
     fn capabilities(&self) -> Capabilities {

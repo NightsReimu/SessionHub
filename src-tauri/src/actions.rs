@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::adapters::claude_code::shell_quote;
 use crate::models::Session;
 
 pub fn hub_dir() -> PathBuf {
@@ -22,63 +21,135 @@ fn ts_suffix() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
-/// 跨平台拉起终端执行续接命令：macOS 用 Terminal.app，Windows 优先 wt，Linux 试常见终端。
-pub fn launch_in_terminal(command: &str, cwd: Option<&str>) -> Result<String, String> {
+/// 清理 tmp 下超过 1 天的启动脚本，避免无限堆积
+fn prune_old_launch_scripts(dir: &Path) {
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("resume-") {
+            continue;
+        }
+        let too_old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t < cutoff)
+            .unwrap_or(false);
+        if too_old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// 跨平台拉起终端执行 argv：macOS 写 zsh 脚本，Windows 写 PowerShell 脚本，
+/// Linux 试常见终端。argv 逐元素按目标 shell 的引用规则转义 —— 会话 id、路径
+/// 里的元字符（`&`、`|`、`;`、反引号等）不可能被解释成命令。
+pub fn launch_in_terminal(argv: &[String], cwd: Option<&str>) -> Result<String, String> {
+    if argv.is_empty() {
+        return Err("启动命令为空".to_string());
+    }
+    let display = argv
+        .iter()
+        .map(|a| crate::models::posix_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let dir = hub_dir().join("tmp");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    prune_old_launch_scripts(&dir);
+
     #[cfg(target_os = "macos")]
     {
+        let quoted = argv
+            .iter()
+            .map(|a| crate::models::posix_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         let script = match cwd {
             Some(c) if !c.is_empty() => {
-                format!("#!/bin/zsh\ncd {} && {}\n", shell_quote(c), command)
+                format!(
+                    "#!/bin/zsh\ncd {} && {}\n",
+                    crate::models::posix_quote(c),
+                    quoted
+                )
             }
-            _ => format!("#!/bin/zsh\n{}\n", command),
+            _ => format!("#!/bin/zsh\n{}\n", quoted),
         };
-        let dir = hub_dir().join("tmp");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("resume-{}.command", ts_suffix()));
         std::fs::write(&path, script).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
         }
         Command::new("open")
             .args(["-a", "Terminal"])
             .arg(&path)
             .spawn()
             .map_err(|e| format!("打开 Terminal 失败：{e}"))?;
-        Ok(command.to_string())
+        Ok(display)
     }
     #[cfg(target_os = "windows")]
     {
-        let cwd_owned = cwd.map(|c| c.to_string());
-        let try_wt = Command::new("wt.exe")
-            .args({
-                let mut a: Vec<String> = Vec::new();
-                if let Some(c) = &cwd_owned {
-                    a.push("-d".into());
-                    a.push(c.clone());
-                }
-                a.push("cmd".into());
-                a.push("/k".into());
-                a.push(command.to_string());
-                a
-            })
-            .spawn();
-        if try_wt.is_err() {
-            Command::new("cmd")
-                .args(["/c", "start", "cmd", "/k", command])
+        // cmd.exe 不把单引号当引用符，任何字符串拼接都可能被 `&` 之类截断；
+        // 因此改为生成 PowerShell 脚本（单引号是真正的引用），只把我们自己
+        // 生成的安全脚本路径交给 cmd。
+        let quoted = argv
+            .iter()
+            .map(|a| crate::models::powershell_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut script = String::from("$ErrorActionPreference = 'Continue'\r\n");
+        if let Some(c) = cwd {
+            if !c.is_empty() {
+                script.push_str(&format!(
+                    "Set-Location -LiteralPath {}\r\n",
+                    crate::models::powershell_quote(c)
+                ));
+            }
+        }
+        // 首元素是程序名，用 & 调用运算符执行，其余作为参数
+        script.push_str(&format!("& {}\r\n", quoted));
+        let path = dir.join(format!("resume-{}.ps1", ts_suffix()));
+        std::fs::write(&path, script).map_err(|e| e.to_string())?;
+        let path_str = path.to_string_lossy().into_owned();
+        let ps_args = [
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            path_str.as_str(),
+        ];
+        if Command::new("wt.exe")
+            .arg("powershell")
+            .args(ps_args)
+            .spawn()
+            .is_err()
+        {
+            Command::new("powershell")
+                .args(ps_args)
                 .spawn()
                 .map_err(|e| format!("打开终端失败：{e}"))?;
         }
-        Ok(command.to_string())
+        Ok(display)
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let quoted = argv
+            .iter()
+            .map(|a| crate::models::posix_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         let shell_cmd = match cwd {
             Some(c) if !c.is_empty() => {
-                format!("cd {} && {}; exec $SHELL", shell_quote(c), command)
+                format!(
+                    "cd {} && {}; exec $SHELL",
+                    crate::models::posix_quote(c),
+                    quoted
+                )
             }
-            _ => format!("{}; exec $SHELL", command),
+            _ => format!("{}; exec $SHELL", quoted),
         };
         for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
             if Command::new(term)
@@ -86,7 +157,7 @@ pub fn launch_in_terminal(command: &str, cwd: Option<&str>) -> Result<String, St
                 .spawn()
                 .is_ok()
             {
-                return Ok(command.to_string());
+                return Ok(display);
             }
         }
         Err("未找到可用终端模拟器".to_string())
@@ -180,12 +251,14 @@ pub fn backup_raw(session: &Session, dest_dir: Option<&str>) -> Result<PathBuf, 
     Ok(dest)
 }
 
-/// 导出：Markdown（元数据 + 消息）或 JSONL（原始文件复制 / 消息行）
+/// 导出：Markdown（元数据 + 消息）或 JSONL（原始文件复制 / 消息行）。
+/// `complete=false` 表示消息可能被上限截断，必须在产物中标注。
 pub fn export_session(
     session: &Session,
     messages: &[crate::models::MessagePreview],
     format: &str,
     dest_path: Option<&str>,
+    complete: bool,
 ) -> Result<PathBuf, String> {
     let dir = hub_dir().join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -247,6 +320,18 @@ pub fn export_session(
                 );
                 out.push('\n');
             }
+            // 可能被截断时追加一条显式告警记录，不静默交付不完整的 JSONL
+            if !complete {
+                out.push_str(
+                    &serde_json::json!({
+                        "type": "sessionhub_truncation_warning",
+                        "message": "该 harness 不支持完整消息读取，本文件可能不完整",
+                        "exported_messages": messages.len(),
+                    })
+                    .to_string(),
+                );
+                out.push('\n');
+            }
             std::fs::write(&dest, out).map_err(|e| e.to_string())?;
             Ok(dest)
         }
@@ -283,7 +368,14 @@ pub fn export_session(
                         .unwrap_or_default()
                 ));
             }
-            md.push_str(&format!("- 原始文件: `{}`\n\n---\n\n", session.raw_path));
+            md.push_str(&format!("- 原始文件: `{}`\n", session.raw_path));
+            md.push_str(&format!("- 消息条数: {}\n", messages.len()));
+            if !complete {
+                md.push_str(
+                    "- ⚠️ 该 harness 不支持完整消息读取，以下内容可能已被截断，不能视为完整备份\n",
+                );
+            }
+            md.push_str("\n---\n\n");
             if messages.is_empty() {
                 md.push_str("（该 harness 暂不支持读取消息内容）\n");
             } else {
