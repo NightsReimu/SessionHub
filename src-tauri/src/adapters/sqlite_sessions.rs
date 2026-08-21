@@ -19,6 +19,8 @@ struct SqliteConfig {
     source_format: &'static str,
     /// session 表没有 cost/tokens 列时，是否从 model_usage 表聚合（zcode）
     usage_pricing: bool,
+    /// CLI 是否支持按会话恢复
+    can_resume: bool,
 }
 
 const OPENCODE: SqliteConfig = SqliteConfig {
@@ -29,17 +31,19 @@ const OPENCODE: SqliteConfig = SqliteConfig {
     launch_argv: &["opencode"],
     source_format: "sqlite",
     usage_pricing: false,
+    can_resume: true,
 };
 
 const ZCODE: SqliteConfig = SqliteConfig {
     id: "zcode",
     name: "Zcode",
     db_rel: ".zcode/cli/db/db.sqlite",
-    // zcode CLI 没有按会话恢复的参数（zcode --help 实测），只能启动 TUI
-    resume_argv: &["zcode"],
+    // zcode CLI 没有按会话恢复的参数（zcode --help 实测）：不提供续接
+    resume_argv: &[],
     launch_argv: &["zcode"],
     source_format: "sqlite",
     usage_pricing: true,
+    can_resume: false,
 };
 
 /// 展开 argv 模板：值恰为 `{id}` 的元素替换成会话 id，其余原样保留。
@@ -371,18 +375,16 @@ fn read_messages_db(
     session_id: &str,
     limit: usize,
     max_len: usize,
-) -> Vec<MessagePreview> {
-    let Some(conn) = open_ro(db_path) else {
-        return Vec::new();
-    };
+) -> Option<Vec<MessagePreview>> {
+    let conn = open_ro(db_path)?;
     if !table_exists(&conn, "message") || !table_exists(&conn, "part") {
-        return Vec::new();
+        return None;
     }
     let sql = "SELECT m.data, p.data, p.time_created FROM part p \
                JOIN message m ON p.message_id = m.id \
                WHERE p.session_id = ?1 ORDER BY p.time_created ASC";
     let Ok(mut stmt) = conn.prepare(sql) else {
-        return Vec::new();
+        return None;
     };
     let rows = stmt.query_map([session_id], |r| {
         Ok((
@@ -422,7 +424,7 @@ fn read_messages_db(
     if msgs.len() > limit {
         msgs = msgs.split_off(msgs.len() - limit);
     }
-    msgs
+    Some(msgs)
 }
 
 macro_rules! sqlite_adapter {
@@ -447,6 +449,9 @@ macro_rules! sqlite_adapter {
                 parse_row(&$cfg, raw)
             }
             fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
+                if $cfg.resume_argv.is_empty() {
+                    return None;
+                }
                 Some(ResumeSpec::new(
                     // `{id}` 占位元素替换为会话 id；无占位符则原样。逐元素替换而非
                     // 字符串拼接，会话 id 中的元字符不可能逃逸成命令。
@@ -462,7 +467,7 @@ macro_rules! sqlite_adapter {
             }
             fn capabilities(&self) -> Capabilities {
                 Capabilities {
-                    can_resume: true,
+                    can_resume: $cfg.can_resume,
                     can_delete: false, // 共享数据库，绝不删除
                     can_backup: false,
                     can_read_messages: true,
@@ -471,14 +476,15 @@ macro_rules! sqlite_adapter {
             }
             fn read_messages(&self, s: &Session, limit: usize) -> Vec<MessagePreview> {
                 read_messages_db(Path::new(&s.raw_path), &s.session_id, limit, 2000)
+                    .unwrap_or_default()
             }
             fn read_messages_full(&self, s: &Session) -> Option<Vec<MessagePreview>> {
-                Some(read_messages_db(
+                read_messages_db(
                     Path::new(&s.raw_path),
                     &s.session_id,
                     usize::MAX,
                     usize::MAX,
-                ))
+                )
             }
         }
     };

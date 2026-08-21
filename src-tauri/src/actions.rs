@@ -17,6 +17,16 @@ pub fn ensure_hub_dirs() -> std::io::Result<()> {
     Ok(())
 }
 
+/// 启动脚本唯一文件名：秒级时间戳 + 随机后缀。
+/// 快速连续启动两个会话时绝不能互相覆盖（否则前一个终端会执行后一个会话的脚本）
+fn launch_script_stem() -> String {
+    format!(
+        "{}-{}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )
+}
+
 fn ts_suffix() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
@@ -76,7 +86,7 @@ pub fn launch_in_terminal(argv: &[String], cwd: Option<&str>) -> Result<String, 
             }
             _ => format!("#!/bin/zsh\n{}\n", quoted),
         };
-        let path = dir.join(format!("resume-{}.command", ts_suffix()));
+        let path = dir.join(format!("resume-{}.command", launch_script_stem()));
         std::fs::write(&path, script).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
@@ -111,7 +121,7 @@ pub fn launch_in_terminal(argv: &[String], cwd: Option<&str>) -> Result<String, 
         }
         // 首元素是程序名，用 & 调用运算符执行，其余作为参数
         script.push_str(&format!("& {}\r\n", quoted));
-        let path = dir.join(format!("resume-{}.ps1", ts_suffix()));
+        let path = dir.join(format!("resume-{}.ps1", launch_script_stem()));
         std::fs::write(&path, script).map_err(|e| e.to_string())?;
         let path_str = path.to_string_lossy().into_owned();
         let ps_args = [

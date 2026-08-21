@@ -252,19 +252,25 @@ impl HarnessAdapter for ClaudeCodeAdapter {
     }
 
     fn read_messages(&self, s: &Session, limit: usize) -> Vec<MessagePreview> {
-        self.read_limited(s, limit, 2000)
+        self.read_limited(s, limit, 2000).unwrap_or_default()
     }
 
     fn read_messages_full(&self, s: &Session) -> Option<Vec<MessagePreview>> {
-        Some(self.read_limited(s, usize::MAX, usize::MAX))
+        self.read_limited(s, usize::MAX, usize::MAX)
     }
 }
 
 impl ClaudeCodeAdapter {
-    fn read_limited(&self, s: &Session, limit: usize, max_len: usize) -> Vec<MessagePreview> {
+    /// None = 源文件打不开（导出/迁移据此明确失败，而不是产出空内容）
+    fn read_limited(
+        &self,
+        s: &Session,
+        limit: usize,
+        max_len: usize,
+    ) -> Option<Vec<MessagePreview>> {
         let path = PathBuf::from(&s.raw_path);
         let mut msgs: Vec<MessagePreview> = Vec::new();
-        for_each_jsonl_line(&path, |v| {
+        if !for_each_jsonl_line(&path, |v| {
             let ty = json_str(&v, "type").unwrap_or("");
             if ty != "user" && ty != "assistant" {
                 return;
@@ -285,11 +291,13 @@ impl ClaudeCodeAdapter {
                 text: truncate(&text, max_len),
                 timestamp: json_str(&v, "timestamp").and_then(parse_iso_ms),
             });
-        });
+        }) {
+            return None;
+        }
         if msgs.len() > limit {
             msgs = msgs.split_off(msgs.len() - limit);
         }
-        msgs
+        Some(msgs)
     }
 }
 

@@ -66,6 +66,14 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
         f.sync_all().map_err(|e| format!("刷盘失败：{e}"))?;
     }
+    // Windows 的 rename 不保证覆盖已存在目标：显式先删再换
+    #[cfg(windows)]
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("删除旧文件失败：{e}")
+        })?;
+    }
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("替换目标文件失败：{e}")

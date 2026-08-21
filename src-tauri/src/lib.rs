@@ -14,10 +14,6 @@ use adapters::{all_adapters, DetectCtx, HarnessAdapter};
 use db::Db;
 use models::*;
 
-/// 源 adapter 不支持完整读取时，导出的兜底上限。取值远高于常规会话长度，
-/// 达到上限即视为可能截断并在导出内容中标注。
-const EXPORT_FALLBACK_LIMIT: usize = 100_000;
-
 pub struct AppState {
     db: Arc<Db>,
     adapters: Arc<Vec<Box<dyn HarnessAdapter>>>,
@@ -236,18 +232,21 @@ fn export_session(
         .db
         .get_session(&harness_id, &session_id)
         .ok_or_else(|| "会话不在索引中".to_string())?;
-    // 导出必须完整：优先不截断读取。仅当源 adapter 不支持完整读取时才退回
-    // 上限读取，并把“可能被截断”如实标注进导出文件，绝不让用户以为拿到了全量备份。
-    let (messages, complete) = match state.adapter(&harness_id) {
-        Some(a) => match a.read_messages_full(&dto.session) {
+    // 导出必须完整且诚实：支持读取的 adapter 若返回 None（源文件打不开/
+    // 读取中途失败），明确报错，绝不产出空文件冒充完整导出。
+    let adapter = state
+        .adapter(&harness_id)
+        .ok_or_else(|| format!("未知 harness：{harness_id}"))?;
+    let (messages, complete) = if adapter.capabilities().can_read_messages {
+        match adapter.read_messages_full(&dto.session) {
             Some(all) => (all, true),
             None => {
-                let capped = a.read_messages(&dto.session, EXPORT_FALLBACK_LIMIT);
-                let complete = capped.len() < EXPORT_FALLBACK_LIMIT;
-                (capped, complete)
+                return Err("源会话文件不可读取或读取中途失败，导出已取消".to_string());
             }
-        },
-        None => (Vec::new(), true),
+        }
+    } else {
+        // 不支持读取消息的源：导出仅含元数据，complete=false 会如实标注
+        (Vec::new(), false)
     };
     let dest = actions::export_session(
         &dto.session,

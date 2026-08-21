@@ -45,7 +45,7 @@ SQLite FTS5，不可用时自动降级 LIKE，标题/路径/标签/备注全覆�
 <td width="33%">
 
 **一键续接**
-`claude --resume` / `codex resume` / `opencode --continue`，跨平台拉起终端
+`claude --resume <id>` / `codex resume <id>` / `opencode --session <id>` 直达对话；Zcode/DSH 的 CLI 无按会话恢复机制，只提供「打开 Harness」
 
 </td>
 </tr>
@@ -85,7 +85,7 @@ notify 监听各 harness 根目录，去抖增量重扫，扫描进度实时可�
 <td>
 
 **会话迁移**
-把会话转换为目标 harness 的原生格式，直接在 Claude Code / Codex 里 resume 续接
+把会话转换为目标 harness 的原生格式，直接在 Claude Code / Codex / OpenCode 里 resume 续接
 
 </td>
 </tr>

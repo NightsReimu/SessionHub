@@ -185,11 +185,9 @@ impl HarnessAdapter for DshAdapter {
         })
     }
 
-    fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
-        Some(ResumeSpec::new(
-            vec!["dsh".to_string()],
-            non_empty(&s.project_path),
-        ))
+    fn resume_spec(&self, _s: &Session) -> Option<ResumeSpec> {
+        // dsh CLI 没有按会话恢复的参数（dsh --help 实测），不声明续接能力
+        None
     }
 
     fn launch_spec(&self, s: &Session) -> Option<ResumeSpec> {
@@ -201,7 +199,7 @@ impl HarnessAdapter for DshAdapter {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            can_resume: true,
+            can_resume: false,
             can_delete: true,
             can_backup: true,
             can_read_messages: true,
@@ -216,25 +214,30 @@ impl HarnessAdapter for DshAdapter {
     }
 
     fn read_messages(&self, s: &Session, limit: usize) -> Vec<MessagePreview> {
-        self.read_limited(s, limit, 2000)
+        self.read_limited(s, limit, 2000).unwrap_or_default()
     }
 
     fn read_messages_full(&self, s: &Session) -> Option<Vec<MessagePreview>> {
-        Some(self.read_limited(s, usize::MAX, usize::MAX))
+        self.read_limited(s, usize::MAX, usize::MAX)
     }
 }
 
 impl DshAdapter {
-    fn read_limited(&self, s: &Session, limit: usize, max_len: usize) -> Vec<MessagePreview> {
+    fn read_limited(
+        &self,
+        s: &Session,
+        limit: usize,
+        max_len: usize,
+    ) -> Option<Vec<MessagePreview>> {
         use std::collections::VecDeque;
         use std::io::{BufRead, BufReader};
 
         let zstd_path = PathBuf::from(&s.raw_path).join("session.jsonl.zstd");
         let Ok(file) = std::fs::File::open(&zstd_path) else {
-            return Vec::new();
+            return None;
         };
         let Ok(decoder) = zstd::stream::read::Decoder::new(file) else {
-            return Vec::new();
+            return None;
         };
         // 有界时用环形缓冲：内存只与 limit 相关；无界（迁移）时全量收集
         let bounded = limit != usize::MAX;
@@ -271,7 +274,7 @@ impl DshAdapter {
                 ring.pop_front();
             }
         }
-        ring.into_iter().collect()
+        Some(ring.into_iter().collect())
     }
 }
 

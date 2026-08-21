@@ -37,6 +37,8 @@ pub trait HarnessAdapter: Send + Sync {
     fn enumerate(&self, root: &Path, ctx: &DetectCtx) -> (Vec<RawRef>, usize);
     fn parse(&self, raw: &RawRef) -> Option<Session>;
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec>;
+    /// 打开 harness 本体（不定位到具体会话）
+    fn launch_spec(&self, s: &Session) -> Option<ResumeSpec> { None }
     fn capabilities(&self) -> Capabilities;
     fn can_use_raw_path(&self, s: &Session) -> bool { true }
     fn can_delete_session(&self, s: &Session) -> bool { ... } // 默认 = can_delete && can_use_raw_path
@@ -138,6 +140,19 @@ pub mod my_harness;
 // all_adapters() 里加一行：
 Box::new(my_harness::MyHarnessAdapter),
 ```
+
+### 规则 7：resume 必须真实可达
+
+`resume_spec` 返回 `None` 就是「不支持」，CLI 没有按会话恢复机制时（如 zcode/DSH）
+把 `can_resume` 设为 `false`、只保留 `launch_spec` 打开本体。
+`ResumeSpec` 的 `command` 仅用于展示，执行一律走 `argv`（逐元素平台转义），
+绝不把拼接字符串交给 shell。
+
+### 规则 8：完整读取必须诚实
+
+`read_messages_full` 用于迁移/导出：不截断、不限条数；
+源文件打不开或读取中途失败时返回 `None`（调用方会明确报错），
+绝不返回空数组假装「这个会话没有消息」。预览接口 `read_messages` 可以保持宽容。
 
 ## 验收清单
 
