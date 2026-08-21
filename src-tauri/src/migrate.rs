@@ -27,7 +27,11 @@ pub fn migrate(
         "codex" => migrate_to_codex(session, messages),
         "claude-code" => migrate_to_claude(session, messages),
         "opencode" => migrate_to_sqlite(session, messages, "opencode"),
-        "zcode" => migrate_to_sqlite(session, messages, "zcode"),
+        // zcode CLI 没有 resume/--session 机制（zcode --help 实测），
+        // 迁移进去也无法被调用，暂不提供该目标
+        "zcode" => Err(
+            "zcode CLI 不支持按会话恢复（无 resume/session 参数），暂不提供该迁移目标".to_string(),
+        ),
         _ => Err(format!(
             "暂不支持迁移到 {target}：该 harness 使用全局索引 + 压缩存储，写入风险过高"
         )),
@@ -45,11 +49,26 @@ fn iso(ms: Option<i64>) -> String {
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     let tmp = path.with_file_name(format!(".sessionhub-tmp-{}", std::process::id()));
     std::fs::write(&tmp, content).map_err(|e| format!("写入临时文件失败：{e}"))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("替换目标文件失败：{e}")
-    })?;
-    Ok(())
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Windows rename 不能覆盖已存在目标：先删再换
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|e2| {
+                    let _ = std::fs::remove_file(&tmp);
+                    format!("删除旧文件失败：{e2}")
+                })?;
+                std::fs::rename(&tmp, path).map_err(|e2| {
+                    let _ = std::fs::remove_file(&tmp);
+                    format!("替换目标文件失败：{e2}")
+                })?;
+                Ok(())
+            } else {
+                let _ = std::fs::remove_file(&tmp);
+                Err(format!("写入目标文件失败：{e}"))
+            }
+        }
+    }
 }
 
 fn norm_role(role: &str) -> &str {
@@ -176,8 +195,9 @@ fn migrate_to_claude(
     }
     atomic_write(&path, &out).map_err(|e| format!("写入 Claude 会话文件失败：{e}"))?;
 
-    // sessions-index.json 尽力维护（读失败就跳过，jsonl 本体才是权威）
-    update_claude_index(&dir, &path, &id, session, messages);
+    // 索引更新失败要反馈：会话文件虽已写入，但用户需要知道索引状态
+    update_claude_index(&dir, &path, &id, session, messages)
+        .map_err(|e| format!("{e}（会话文件已写入 {}）", path.display()))?;
 
     Ok(MigrationResult {
         path,
@@ -192,22 +212,21 @@ fn update_claude_index(
     id: &str,
     session: &Session,
     messages: &[MessagePreview],
-) {
+) -> Result<(), String> {
     let index_path = dir.join("sessions-index.json");
-    // 已存在但暂时解析失败（损坏/并发写入中）→ 直接跳过，绝不用空索引覆盖原文件
+    // 已存在但暂时解析失败（损坏/并发写入中）→ 明确报错，绝不用空索引覆盖原文件
     let mut v = if index_path.exists() {
-        let Ok(text) = std::fs::read_to_string(&index_path) else {
-            return;
-        };
+        let text =
+            std::fs::read_to_string(&index_path).map_err(|e| format!("读取索引失败：{e}"))?;
         match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(e) => return Err(format!("索引暂时不可解析，已保留原文件：{e}")),
         }
     } else {
         serde_json::json!({"version": 1, "entries": []})
     };
     let Some(entries) = v.get_mut("entries").and_then(|e| e.as_array_mut()) else {
-        return;
+        return Err("索引结构异常（缺少 entries 数组），已保留原文件".to_string());
     };
     let first_prompt = messages
         .iter()
@@ -228,9 +247,8 @@ fn update_claude_index(
         "projectPath": session.project_path,
         "isSidechain": false,
     }));
-    if let Ok(text) = serde_json::to_string_pretty(&v) {
-        let _ = atomic_write(&index_path, &text);
-    }
+    let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    atomic_write(&index_path, &text)
 }
 
 // ---------------- OpenCode / Zcode 目标（共享 SQLite，事务写入） ----------------
@@ -249,15 +267,9 @@ fn migrate_to_sqlite(
 ) -> Result<MigrationResult, String> {
     use rusqlite::{params, Connection};
 
-    let (db_rel, sid_prefix, resume_cmd) = match target {
-        "opencode" => (
-            ".local/share/opencode/opencode.db",
-            "ses_",
-            "opencode --continue",
-        ),
-        "zcode" => (".zcode/cli/db/db.sqlite", "sess_", "zcode --continue"),
-        _ => unreachable!(),
-    };
+    // 只支持 opencode（zcode 无按会话恢复的 CLI 机制）
+    let sid_prefix = "ses_";
+    let db_rel = ".local/share/opencode/opencode.db";
     let db_path = dirs::home_dir().unwrap_or_default().join(db_rel);
     if !db_path.is_file() {
         return Err(format!("{target} 数据库不存在：{}", db_path.display()));
@@ -361,8 +373,12 @@ fn migrate_to_sqlite(
 
     Ok(MigrationResult {
         path: db_path,
-        session_id: sid,
-        resume_command: format!("cd {} && {resume_cmd}", shell_safe(&session.project_path)),
+        session_id: sid.clone(),
+        resume_command: format!(
+            "cd {} && opencode --session {}",
+            shell_safe(&session.project_path),
+            sid
+        ),
     })
 }
 
@@ -496,6 +512,23 @@ mod tests {
         assert_eq!(msgs.len(), 2);
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let dir = std::env::temp_dir().join(format!("sh-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.json");
+        atomic_write(&path, "v1").unwrap();
+        atomic_write(&path, "v2").unwrap(); // 覆盖已存在目标（Windows 的 rename 限制路径）
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
+        // 临时文件不应残留
+        assert!(std::fs::read_dir(&dir).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("sessionhub-tmp")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

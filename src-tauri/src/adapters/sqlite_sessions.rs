@@ -23,7 +23,7 @@ const OPENCODE: SqliteConfig = SqliteConfig {
     id: "opencode",
     name: "OpenCode",
     db_rel: ".local/share/opencode/opencode.db",
-    resume_command: "opencode --continue",
+    resume_command: "opencode --session {id}",
     launch_command: "opencode",
     source_format: "sqlite",
     usage_pricing: false,
@@ -33,7 +33,8 @@ const ZCODE: SqliteConfig = SqliteConfig {
     id: "zcode",
     name: "Zcode",
     db_rel: ".zcode/cli/db/db.sqlite",
-    resume_command: "zcode --continue",
+    // zcode CLI 没有按会话恢复的参数（zcode --help 实测），只能启动 TUI
+    resume_command: "zcode",
     launch_command: "zcode",
     source_format: "sqlite",
     usage_pricing: true,
@@ -431,7 +432,8 @@ macro_rules! sqlite_adapter {
             }
             fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
                 Some(ResumeSpec {
-                    command: $cfg.resume_command.to_string(),
+                    // {id} 占位符替换为会话 id（opencode --session）；无占位符则原样
+                    command: $cfg.resume_command.replace("{id}", &s.session_id),
                     cwd: non_empty(&s.project_path),
                 })
             }

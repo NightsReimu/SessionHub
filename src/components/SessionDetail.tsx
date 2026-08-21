@@ -308,7 +308,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
               }}
             >
               <option value="">迁移到…</option>
-              {["claude-code", "codex", "opencode", "zcode"]
+              {["claude-code", "codex", "opencode"]
                 .filter((t) => t !== session.harness_id)
                 .map((t) => (
                   <option key={t} value={t} className="bg-zinc-900">
