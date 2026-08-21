@@ -279,12 +279,15 @@ mod tests {
         let extra = base.join("extra");
         std::fs::create_dir_all(&extra).unwrap();
         let cfg = base.join("adapters.json");
+        // 用 serde_json 构造而不是 format! 拼字符串：Windows 路径含反斜杠，
+        // 直接嵌进 JSON 字面量会产生 \U \A \T 等非法转义，解析失败后
+        // custom_roots_from 返回空，测试在 Windows 上假失败。
         std::fs::write(
             &cfg,
-            format!(
-                r#"{{"generic_extra_roots":["{}", "/no/such/dir-xyz"]}}"#,
-                extra.display()
-            ),
+            serde_json::json!({
+                "generic_extra_roots": [extra.to_string_lossy(), "/no/such/dir-xyz"]
+            })
+            .to_string(),
         )
         .unwrap();
         assert_eq!(GenericAdapter::custom_roots_from(&cfg), vec![extra.clone()]);
