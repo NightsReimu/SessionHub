@@ -18,13 +18,13 @@
 
 <br/>
 
-<img src="docs/assets/screenshot.jpg" width="92%" alt="SessionHub 主界面" />
+<img src="docs/assets/screenshot.jpg" width="92%" alt="SessionHub 用量统计" />
 
 </div>
 
 <br/>
 
-把所有 AI 编程 harness 的会话——Claude Code、Codex、OpenCode、Zcode、DeepSeek Harness——**统一发现 → 浏览 → 搜索 → 续接 → 迁移 → 备份 / 清理**。本地优先，只读默认，跨平台原生窗口，玻璃拟态 UI + 彩色鼠标轨迹。
+把所有 AI 编程 harness 的会话——Claude Code、Codex、OpenCode、Zcode、DeepSeek Harness——**统一发现 → 浏览 → 搜索 → 续接 → 迁移 → 备份 / 清理**。本地优先，只读默认，跨平台原生窗口，浅色 / 深色双主题。
 
 ## 特性
 
@@ -59,7 +59,7 @@ SQLite FTS5，不可用时自动降级 LIKE，标题/路径/标签/备注全覆�
 <td>
 
 **用量统计**
-按模型刊例价估算费用（ccusage 口径），按 harness 聚合 token 与 Top 会话
+按日期筛选（今天 / 7 天 / 30 天 / 90 天 / 本月 / 全部 / 自定义），堆叠趋势图 + 按工具 / 按模型 / Token 构成 / Top 会话，逐请求按模型计价
 
 </td>
 <td>
@@ -133,7 +133,15 @@ flowchart LR
 
 > SQLite 型 harness（OpenCode/Zcode）的会话存在共享数据库里，因此**不支持删除和备份单会话**；导出 Markdown/JSONL 不受影响。
 >
-> 费用为刊例估算：Claude 按行内模型分档（Opus/Sonnet/Haiku，缓存读写单独计桶）、Codex 按 GPT-5 系（缓存输入折扣价）、DSH 按 DeepSeek 刊例、Zcode 按模型族近似价；OpenCode 为真实费用。
+> **用量口径**：每条请求带时间戳和模型入账（`usage_events` 账本），按本地时区分桶。费用按 `pricing.rs` 里的各模型刊例价估算（Claude 5m / 1h 缓存写入分开计价、fast 模式加价；GPT-5.x / 6.x、DeepSeek、GLM、Kimi 等按模型匹配；未知模型标「未定价」，不瞎套价格）；OpenCode 用其记录的真实费用。
+>
+> 去重与校正（均在本机真实数据上核对过）：
+> - **Claude Code**：一条回复按内容块拆成多行、每行都带同一份 usage → 按 `message.id + requestId` 去重（与 ccusage 一致）；子代理 `subagents/*.jsonl` 的用量计入父会话
+> - **Codex**：只计累计计数越过最高点的增量（忽略重复事件与并发写入的交错快照）；resume / fork 出来的 rollout 不重复计入继承的累计值；`<uuid>_<线程>` 子线程文件独立入库，不再与父会话互相覆盖
+> - **Zcode**：`input_tokens` 已含缓存读写，不再重复相加
+> - **DeepSeek Harness**：逐 step 读取会话日志里的 usage，按当时的模型计价
+>
+> harness 自动清理掉的旧会话，其历史用量仍保留在账本里。
 
 </details>
 
@@ -172,7 +180,7 @@ scripts/make-dmg.sh        # 可选：手动打 .dmg
 
 ```bash
 cd src-tauri
-cargo test                                             # 17 个单元回归测试
+cargo test                                             # 38 个单元回归测试
 cargo clippy --all-targets -- -D warnings              # lint 门禁
 cargo fmt --check                                      # 格式门禁
 cargo test scan_real_machine_smoke -- --ignored --nocapture   # 本机真实数据只读冒烟
@@ -196,6 +204,7 @@ git tag v0.1.1 && git push origin v0.1.1
 - [x] M3 占位探测 + 标签备注收藏 + 实时监听 + 扫描进度条
 - [x] M4 配置插件（adapters.json）+ adapter 开发文档 + CI 打包发布
 - [x] M5-lite 用量统计面板 + 刊例价费用估算
+- [x] M5.1 UI 重做（浅色 / 深色）、按日期的用量统计与趋势图、逐请求计价与去重、扫描提速（16 GB 全量约 2 秒）
 - [ ] M5（可选）跨设备同步、AI 生成标题（需联网，与「本地优先」权衡后再定）
 
 <div align="center">

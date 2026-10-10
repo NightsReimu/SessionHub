@@ -13,7 +13,7 @@ function renderInline(text: string): React.ReactNode {
     }
     if (p.length > 2 && p.startsWith("`") && p.endsWith("`")) {
       return (
-        <code key={i} className="px-1 py-0.5 rounded bg-black/50 text-[12px] text-accent">
+        <code key={i} className="mono px-1 py-px rounded bg-surface-3 text-[12px] text-ink">
           {p.slice(1, -1)}
         </code>
       );
@@ -49,7 +49,7 @@ export default function MessageText({ text }: { text: string }) {
           return (
             <pre
               key={i}
-              className="my-1.5 overflow-x-auto rounded-lg border border-line bg-page px-2.5 py-2 text-[12px] leading-relaxed select-text"
+              className="mono my-1.5 overflow-x-auto rounded-lg border border-line bg-surface px-3 py-2 text-[12px] leading-relaxed select-text whitespace-pre"
             >
               {code}
             </pre>

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 归一化后的统一会话模型。所有 adapter 都把各自格式转成这个结构。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Session {
     pub session_id: String,
     pub harness_id: String,
@@ -20,6 +20,50 @@ pub struct Session {
     pub source_format: String,
     pub file_size: u64,
     pub file_mtime: i64,
+    /// 带时间戳的用量明细（只在扫描时随会话入库，不发给前端）
+    #[serde(skip)]
+    pub usage: Vec<UsageEvent>,
+}
+
+/// 一条用量明细：某时刻、某模型的一次（或一批）请求消耗。
+/// token 分桶互不重叠：input 只含未命中缓存的输入，output 含推理 token。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageEvent {
+    /// ms epoch
+    pub ts: i64,
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub cost_usd: f64,
+    /// 模型是否命中价格表（或 harness 自带真实费用）
+    pub priced: bool,
+    pub requests: u32,
+}
+
+impl UsageEvent {
+    pub fn total_tokens(&self) -> u64 {
+        self.input + self.output + self.cache_read + self.cache_write
+    }
+}
+
+impl Session {
+    /// 由用量明细汇总会话级 token / 费用（列表展示用）
+    pub fn apply_usage_totals(&mut self) {
+        if self.usage.is_empty() {
+            return;
+        }
+        let (mut tin, mut tout, mut cost) = (0u64, 0u64, 0.0f64);
+        for e in &self.usage {
+            tin += e.input + e.cache_read + e.cache_write;
+            tout += e.output;
+            cost += e.cost_usd;
+        }
+        self.tokens_in = (tin > 0).then_some(tin);
+        self.tokens_out = (tout > 0).then_some(tout);
+        self.cost_usd = (cost > 0.0).then_some(cost);
+    }
 }
 
 /// 只写入 SessionHub 自己数据库的用户数据，绝不触碰 harness 文件。
@@ -95,7 +139,7 @@ pub fn powershell_quote(s: &str) -> String {
 
 /// 一个待解析的原始对象。对文件型 harness 就是磁盘上的文件；
 /// 对 SQLite/索引型 harness，`inline` 直接携带行数据（防御式：避免二次查询）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RawRef {
     pub path: std::path::PathBuf,
     pub size: u64,
@@ -103,6 +147,8 @@ pub struct RawRef {
     pub inline: Option<serde_json::Value>,
     /// 廉价 identity（文件 stem / 行 id），用于增量扫描时跳过昂贵 parse
     pub identity: Option<String>,
+    /// 枚举阶段已聚合好的用量明细（SQLite 型 harness 一次查询拿到全部会话的明细）
+    pub usage: Vec<UsageEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,24 +216,78 @@ pub struct HubPaths {
     pub db_path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct HarnessStat {
-    pub harness_id: String,
-    pub sessions: usize,
-    pub tokens_in: u64,
-    pub tokens_out: u64,
+/// 用量统计的 token / 费用汇总（任意维度共用）
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct UsageSums {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
     pub cost_usd: f64,
+    pub requests: u64,
+    /// 未定价模型的 token 数（费用里没算进去的部分）
+    pub unpriced_tokens: u64,
+}
+
+impl UsageSums {
+    pub fn add(&mut self, e: &UsageEvent) {
+        self.input += e.input;
+        self.output += e.output;
+        self.cache_read += e.cache_read;
+        self.cache_write += e.cache_write;
+        self.cost_usd += e.cost_usd;
+        self.requests += e.requests as u64;
+        if !e.priced {
+            self.unpriced_tokens += e.total_tokens();
+        }
+    }
+}
+
+/// 趋势图的一个点：某时间桶内某 harness 的用量
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageTrendPoint {
+    /// 时间桶起点（本地时区对齐），ms epoch
+    pub start: i64,
+    pub harness_id: String,
+    #[serde(flatten)]
+    pub sums: UsageSums,
+}
+
+/// 按 harness / 模型分组的用量
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageGroup {
+    pub key: String,
+    /// 按模型分组时：该模型出现在哪些 harness
+    pub harnesses: Vec<String>,
+    pub sessions: usize,
+    pub priced: bool,
+    #[serde(flatten)]
+    pub sums: UsageSums,
+}
+
+/// 区间内消耗最高的会话
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSessionRow {
+    pub session: Option<SessionDto>,
+    pub harness_id: String,
+    pub session_id: String,
+    #[serde(flatten)]
+    pub sums: UsageSums,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct StatsOverview {
-    pub total_sessions: usize,
-    pub total_tokens_in: u64,
-    pub total_tokens_out: u64,
-    pub total_cost_usd: f64,
-    pub per_harness: Vec<HarnessStat>,
-    /// 按 token 消耗排序的会话（含 meta，可直接跳转）
-    pub top_sessions: Vec<SessionDto>,
+pub struct UsageReport {
+    /// hour | day | week | month
+    pub granularity: String,
+    pub totals: UsageSums,
+    pub sessions: usize,
+    pub trend: Vec<UsageTrendPoint>,
+    pub by_harness: Vec<UsageGroup>,
+    pub by_model: Vec<UsageGroup>,
+    pub top_sessions: Vec<UsageSessionRow>,
+    /// 全部明细里最早 / 最晚的时间（「全部」区间画坐标轴用）
+    pub first_ts: Option<i64>,
+    pub last_ts: Option<i64>,
 }
 
 #[cfg(test)]

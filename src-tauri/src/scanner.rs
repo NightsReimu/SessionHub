@@ -7,7 +7,15 @@ use crate::models::{AdapterScanStat, ScanProgress, ScanReport};
 /// 解析器版本：解析逻辑产出字段发生变化（如新增费用估算）时 +1。
 /// 按 harness 分别记录迁移状态——全局单一版本会在某 harness 恰好未安装时
 /// 误标完成，导致其旧会话永远不补算新字段
-const PARSE_VERSION: &str = "4";
+///
+/// v6：用量改为带时间戳的明细（按日期统计），修正 Claude 内容块重复计数、
+/// Codex 重复 token_count / 交错快照 / resume 继承累计值、Zcode 缓存重复计入，价格按模型计
+const PARSE_VERSION: &str = "6";
+
+/// 解析结果攒够这么多条再一次性事务写入
+const UPSERT_BATCH: usize = 64;
+/// 进度事件最小间隔：避免前端每秒重渲染上百次
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(120);
 
 /// 扫描所有 adapter：enumerate → 增量跳过 → parse → upsert。
 /// full=true 时强制重解析，并清理索引里已不存在的会话。
@@ -74,6 +82,12 @@ pub fn scan_all(
         }
         let total = all_raws.len();
         let mut seen_ids: Vec<String> = Vec::new();
+        // 扫描戳一次性载入内存：worker 不再逐个文件抢数据库锁
+        let stamps = if full_for_adapter {
+            std::collections::HashMap::new()
+        } else {
+            db.stamps(adapter.id()).unwrap_or_default()
+        };
 
         enum ItemResult {
             Skipped,
@@ -95,6 +109,7 @@ pub fn scan_all(
             for _ in 0..threads {
                 let tx = tx.clone();
                 let counter = &counter;
+                let stamps = &stamps;
                 s.spawn(move || loop {
                     let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if i >= total {
@@ -104,7 +119,7 @@ pub fn scan_all(
                     // 增量：identity + (size, mtime) 未变则跳过昂贵 parse
                     if !full_for_adapter {
                         if let Some(id) = raw.identity.as_deref() {
-                            if db.stamp(adapter_ref.id(), id) == Some((raw.size, raw.mtime_ms)) {
+                            if stamps.get(id) == Some(&(raw.size, raw.mtime_ms)) {
                                 let _ = tx.send(ItemResult::Skipped);
                                 continue;
                             }
@@ -123,6 +138,21 @@ pub fn scan_all(
             }
             drop(tx);
             let mut done = 0usize;
+            let mut pending: Vec<crate::models::Session> = Vec::with_capacity(UPSERT_BATCH);
+            let mut last_emit = Instant::now();
+            let flush = |pending: &mut Vec<crate::models::Session>, stat: &mut AdapterScanStat| {
+                if pending.is_empty() {
+                    return;
+                }
+                match db.upsert_sessions(pending) {
+                    Ok(_) => stat.parsed += pending.len(),
+                    Err(e) => {
+                        eprintln!("[scan] batch upsert failed: {e}");
+                        stat.errors += pending.len();
+                    }
+                }
+                pending.clear();
+            };
             for res in rx {
                 done += 1;
                 stat.scanned += 1;
@@ -131,31 +161,33 @@ pub fn scan_all(
                     ItemResult::Failed => stat.errors += 1,
                     ItemResult::Parsed(session) => {
                         seen_ids.push(session.session_id.clone());
-                        match db.upsert_session(&session) {
-                            Ok(_) => stat.parsed += 1,
-                            Err(e) => {
-                                eprintln!("[scan] upsert failed {}: {e}", session.session_id);
-                                stat.errors += 1;
-                            }
+                        pending.push(*session);
+                        if pending.len() >= UPSERT_BATCH {
+                            flush(&mut pending, &mut stat);
                         }
                     }
                 }
-                // 统一的进度上报点：所有处理分支共用
+                if done == total {
+                    flush(&mut pending, &mut stat);
+                }
+                // 统一的进度上报点：所有处理分支共用（节流）
                 if let Some(p) = progress {
-                    if done % 25 == 0 || done == total {
+                    if done == total || last_emit.elapsed() >= PROGRESS_INTERVAL {
+                        last_emit = Instant::now();
                         p(ScanProgress {
                             adapter_id: adapter.id().to_string(),
                             adapter_index: this_index,
                             adapter_count,
                             done,
                             total,
-                            parsed: stat.parsed,
+                            parsed: stat.parsed + pending.len(),
                             skipped: stat.skipped,
                             errors: stat.errors,
                         });
                     }
                 }
             }
+            flush(&mut pending, &mut stat);
         });
         // prune 安全规则（全量扫描）：
         // - 有任何错误（目录遍历失败/解析失败/索引损坏/必需根目录消失）→ 不动索引
@@ -222,6 +254,7 @@ mod tests {
                 mtime_ms: 1,
                 inline: None,
                 identity: Some(id.to_string()),
+                usage: Vec::new(),
             })
             .collect();
         *shared.errors.lock().unwrap() = errors;
@@ -266,15 +299,12 @@ mod tests {
                 title: id,
                 started_at: Some(1),
                 ended_at: Some(1),
-                message_count: None,
-                tokens_in: None,
-                tokens_out: None,
-                cost_usd: None,
                 status: "idle".to_string(),
                 raw_path: raw.path.to_string_lossy().into_owned(),
                 source_format: "mock".to_string(),
                 file_size: raw.size,
                 file_mtime: raw.mtime_ms,
+                ..Default::default()
             })
         }
         fn resume_spec(&self, _s: &Session) -> Option<ResumeSpec> {
@@ -383,6 +413,39 @@ mod tests {
                 "检测到 harness 但一个会话都没解析出来"
             );
         }
+        let usage = db
+            .usage_report(&crate::db::UsageQuery::default(), 5)
+            .unwrap();
+        for g in &usage.by_harness {
+            eprintln!(
+                "{:<12} sessions={:<5} in={:<14} out={:<12} cr={:<14} cw={:<12} cost=${:.2} unpriced={}",
+                g.key,
+                g.sessions,
+                g.sums.input,
+                g.sums.output,
+                g.sums.cache_read,
+                g.sums.cache_write,
+                g.sums.cost_usd,
+                g.sums.unpriced_tokens
+            );
+        }
+        for g in usage.by_model.iter().take(12) {
+            eprintln!(
+                "  model {:<28} cost=${:.2} tokens={} priced={}",
+                g.key,
+                g.sums.cost_usd,
+                g.sums.input + g.sums.output + g.sums.cache_read + g.sums.cache_write,
+                g.priced
+            );
+        }
+        // 第二遍增量扫描应几乎全部命中扫描戳
+        let t = std::time::Instant::now();
+        let again = scan_all(&db, &adapters, &DetectCtx::new(), false, None);
+        eprintln!(
+            "incremental rescan: {:?}, skipped={}",
+            t.elapsed(),
+            again.adapters.iter().map(|a| a.skipped).sum::<usize>()
+        );
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(tmp.with_extension("db-wal"));
         let _ = std::fs::remove_file(tmp.with_extension("db-shm"));

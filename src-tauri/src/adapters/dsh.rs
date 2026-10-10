@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use super::claude_code::non_empty;
 use super::util::*;
 use super::{DetectCtx, HarnessAdapter};
-use crate::models::{Capabilities, MessagePreview, RawRef, ResumeSpec, Session};
+use crate::models::{Capabilities, MessagePreview, RawRef, ResumeSpec, Session, UsageEvent};
+use crate::pricing::Tokens;
 
 /// DeepSeek Harness: 直接解析 ~/.dsh/storages/session_projcache.json
 /// （它已经是“项目 → session”索引），原始会话目录在 ~/.dsh/sessions/<编码项目>/<session-id>/。
@@ -103,6 +104,7 @@ impl HarnessAdapter for DshAdapter {
                         "value": value,
                         "raw_dir": raw_dir,
                     })),
+                    usage: Vec::new(),
                 }
             })
             .collect();
@@ -132,31 +134,16 @@ impl HarnessAdapter for DshAdapter {
 
         let turns = row_val("sessionStats").and_then(|s| json_u64(s, "turns"));
 
-        let (mut tin, mut tout) = (None, None);
-        let mut cost = None;
-        if let Some(totals) = row_val("tokenUsage").and_then(|t| t.get("totals")) {
-            let uncached = json_u64(totals, "uncachedInputTokens").unwrap_or(0);
-            let cache_read = json_u64(totals, "cacheReadTokens").unwrap_or(0);
-            let cache_write = json_u64(totals, "cacheWriteTokens").unwrap_or(0);
-            let output = json_u64(totals, "outputTokens").unwrap_or(0);
-            let i = uncached + cache_read + cache_write;
-            if i > 0 {
-                tin = Some(i);
-            }
-            if output > 0 {
-                tout = Some(output);
-            }
-            // DeepSeek 刊例价估算（美元/百万 token）：
-            // 未命中输入 $0.27、缓存读 $0.07、缓存写 $0.27、输出 $1.10
-            let usd = (uncached as f64 * 0.27
-                + cache_read as f64 * 0.07
-                + cache_write as f64 * 0.27
-                + output as f64 * 1.10)
-                / 1e6;
-            if usd > 0.0 {
-                cost = Some(usd);
-            }
-        }
+        // 汇总值兜底：日志不可读时，把 projcache 的累计用量作为一条明细
+        let totals = row_val("tokenUsage")
+            .and_then(|t| t.get("totals"))
+            .map(|t| Tokens {
+                input: json_u64(t, "uncachedInputTokens").unwrap_or(0),
+                output: json_u64(t, "outputTokens").unwrap_or(0),
+                cache_read: json_u64(t, "cacheReadTokens").unwrap_or(0),
+                cache_write: json_u64(t, "cacheWriteTokens").unwrap_or(0),
+                cache_write_1h: 0,
+            });
 
         let updated = row_val("sessionListMetadata")
             .and_then(|m| json_i64(m, "lastPromptAt"))
@@ -166,7 +153,24 @@ impl HarnessAdapter for DshAdapter {
             .map(|s| s.to_string())
             .unwrap_or_else(|| raw.path.to_string_lossy().into_owned());
 
-        Some(Session {
+        // 逐步明细：每个 step 的 usage chunk 带时间和当时的模型（会话里可切换模型）
+        let mut usage = json_str(inline, "raw_dir")
+            .and_then(|d| step_usage(&PathBuf::from(d).join("session.jsonl.zstd")))
+            .unwrap_or_default();
+        if usage.is_empty() {
+            if let Some(t) =
+                totals.filter(|t| t.input + t.output + t.cache_read + t.cache_write > 0)
+            {
+                usage.push(priced_event(
+                    updated.unwrap_or(raw.mtime_ms),
+                    "deepseek",
+                    t,
+                    1.0,
+                ));
+            }
+        }
+
+        let mut session = Session {
             session_id: key,
             harness_id: self.id().to_string(),
             project_path: cwd,
@@ -174,15 +178,16 @@ impl HarnessAdapter for DshAdapter {
             started_at: created,
             ended_at: updated,
             message_count: turns.map(|t| t as u32),
-            tokens_in: tin,
-            tokens_out: tout,
-            cost_usd: cost,
             status: derive_status(updated.unwrap_or(raw.mtime_ms)),
             raw_path,
             source_format: "dsh-projcache".to_string(),
             file_size: raw.size,
             file_mtime: raw.mtime_ms,
-        })
+            usage,
+            ..Default::default()
+        };
+        session.apply_usage_totals();
+        Some(session)
     }
 
     fn resume_spec(&self, _s: &Session) -> Option<ResumeSpec> {
@@ -220,6 +225,94 @@ impl HarnessAdapter for DshAdapter {
     fn read_messages_full(&self, s: &Session) -> Option<Vec<MessagePreview>> {
         self.read_limited(s, usize::MAX, usize::MAX)
     }
+}
+
+/// session.jsonl.zstd 的用量缓存：projcache 一变，所有 DSH 会话都会被重新 parse，
+/// 但各会话日志大多没变——按 (size, mtime) 复用上次的解析结果，避免反复解压
+type StepCache = HashMap<PathBuf, ((u64, i64), Vec<UsageEvent>)>;
+static STEP_CACHE: std::sync::OnceLock<std::sync::Mutex<StepCache>> = std::sync::OnceLock::new();
+
+fn file_stamp(p: &Path) -> Option<(u64, i64)> {
+    let md = std::fs::metadata(p).ok()?;
+    let m = md
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    Some((md.len(), m))
+}
+
+/// 从 DSH 会话日志读出每个 step 的用量：`request/header` 给出当前模型，
+/// `assistant/chunk` 里 `chunk.type == "usage"` 是该 step 的计数
+/// （inputTokens 不含缓存命中，与 projcache 的 uncachedInputTokens 口径一致，已实测核对）
+fn step_usage(zstd_path: &Path) -> Option<Vec<UsageEvent>> {
+    let stamp = file_stamp(zstd_path)?;
+    let cache = STEP_CACHE.get_or_init(Default::default);
+    if let Some((st, ev)) = cache.lock().ok()?.get(zstd_path) {
+        if *st == stamp {
+            return Some(ev.clone());
+        }
+    }
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(zstd_path).ok()?;
+    let decoder = zstd::stream::read::Decoder::new(file).ok()?;
+    let mut reader = BufReader::with_capacity(1 << 20, decoder);
+    let mut buf = Vec::new();
+    let mut model = String::new();
+    let mut events = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let Ok(line) = std::str::from_utf8(&buf) else {
+            continue;
+        };
+        let is_header = line.contains("\"request/header\"");
+        if !is_header && !line.contains("\"usage\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        let data = v.get("data").unwrap_or(&serde_json::Value::Null);
+        if is_header {
+            if let Some(m) = data
+                .pointer("/header/config/model")
+                .and_then(|m| m.as_str())
+            {
+                model = m.to_string();
+            }
+            continue;
+        }
+        let Some(chunk) = data.get("chunk") else {
+            continue;
+        };
+        if json_str(chunk, "type") != Some("usage") {
+            continue;
+        }
+        let Some(u) = chunk.get("usage") else {
+            continue;
+        };
+        let t = Tokens {
+            input: json_u64(u, "inputTokens").unwrap_or(0),
+            output: json_u64(u, "outputTokens").unwrap_or(0),
+            cache_read: json_u64(u, "cacheReadTokens").unwrap_or(0),
+            cache_write: json_u64(u, "cacheWriteTokens").unwrap_or(0),
+            cache_write_1h: 0,
+        };
+        if t.input + t.output + t.cache_read + t.cache_write == 0 {
+            continue;
+        }
+        let ts = json_i64(&v, "time").unwrap_or(0);
+        events.push(priced_event(ts, &model, t, 1.0));
+    }
+    if let Ok(mut c) = cache.lock() {
+        c.insert(zstd_path.to_path_buf(), (stamp, events.clone()));
+    }
+    Some(events)
 }
 
 impl DshAdapter {
@@ -300,6 +393,7 @@ mod tests {
             source_format: "dsh-projcache".to_string(),
             file_size: 0,
             file_mtime: 0,
+            ..Default::default()
         }
     }
 

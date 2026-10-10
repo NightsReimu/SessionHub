@@ -46,21 +46,60 @@ export interface SessionDto extends Session {
   raw_usable: boolean;
 }
 
-export interface HarnessStat {
-  harness_id: string;
-  sessions: number;
-  tokens_in: number;
-  tokens_out: number;
+/** token 分桶互不重叠：input 只含未命中缓存的输入，output 含推理 token */
+export interface UsageSums {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
   cost_usd: number;
+  requests: number;
+  /** 未定价模型的 token 数（没算进费用） */
+  unpriced_tokens: number;
 }
 
-export interface StatsOverview {
-  total_sessions: number;
-  total_tokens_in: number;
-  total_tokens_out: number;
-  total_cost_usd: number;
-  per_harness: HarnessStat[];
-  top_sessions: SessionDto[];
+export interface UsageTrendPoint extends UsageSums {
+  /** 时间桶起点（本地时区对齐） */
+  start: number;
+  harness_id: string;
+}
+
+export interface UsageGroup extends UsageSums {
+  key: string;
+  harnesses: string[];
+  sessions: number;
+  priced: boolean;
+}
+
+export interface UsageSessionRow extends UsageSums {
+  session: SessionDto | null;
+  harness_id: string;
+  session_id: string;
+}
+
+export type Granularity = "hour" | "day" | "week" | "month";
+
+export interface UsageReport {
+  granularity: Granularity;
+  totals: UsageSums;
+  sessions: number;
+  trend: UsageTrendPoint[];
+  by_harness: UsageGroup[];
+  by_model: UsageGroup[];
+  top_sessions: UsageSessionRow[];
+  first_ts: number | null;
+  last_ts: number | null;
+}
+
+export interface UsageQuery {
+  start_ms: number | null;
+  end_ms: number | null;
+  harness: string | null;
+  granularity: Granularity | null;
+}
+
+export function totalTokens(s: UsageSums): number {
+  return s.input + s.output + s.cache_read + s.cache_write;
 }
 
 export interface AdapterScanStat {
@@ -120,7 +159,7 @@ let metaSaveChain: Promise<unknown> = Promise.resolve();
 export const api = {
   listAdapters: () => invoke<AdapterInfo[]>("list_adapters"),
   scan: (full: boolean) => invoke<ScanReport>("scan_sessions", { full }),
-  listSessions: (harness: string | null, favoritesOnly: boolean, limit = 800, offset = 0) =>
+  listSessions: (harness: string | null, favoritesOnly: boolean, limit = 10000, offset = 0) =>
     invoke<SessionDto[]>("list_sessions", { harness, favoritesOnly, limit, offset }),
   searchSessions: (query: string) => invoke<SessionDto[]>("search_sessions", { query }),
   getMessages: (harnessId: string, sessionId: string, limit = 300) =>
@@ -148,7 +187,7 @@ export const api = {
     return p;
   },
   counts: () => invoke<Counts>("get_counts"),
-  getStats: () => invoke<StatsOverview>("get_stats"),
+  usageReport: (query: UsageQuery) => invoke<UsageReport>("get_usage_report", { query }),
   hubPaths: () => invoke<HubPaths>("get_hub_paths"),
   watcherStart: () => invoke<boolean>("watcher_start"),
   watcherStop: () => invoke<boolean>("watcher_stop"),

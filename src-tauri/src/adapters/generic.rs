@@ -254,6 +254,7 @@ impl HarnessAdapter for GenericAdapter {
             source_format: if ext == "jsonl" { "jsonl" } else { "json" }.to_string(),
             file_size: raw.size,
             file_mtime: raw.mtime_ms,
+            ..Default::default()
         })
     }
     fn resume_spec(&self, _s: &Session) -> Option<ResumeSpec> {

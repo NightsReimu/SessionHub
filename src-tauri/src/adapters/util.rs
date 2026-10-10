@@ -2,7 +2,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use crate::models::RawRef;
+use crate::models::{RawRef, UsageEvent};
+use crate::pricing::{self, Tokens};
 
 /// 构造文件型 RawRef；读不到元数据时返回 None
 pub fn file_raw_ref(path: &Path) -> Option<RawRef> {
@@ -22,28 +23,65 @@ pub fn file_raw_ref(path: &Path) -> Option<RawRef> {
         mtime_ms,
         inline: None,
         identity: Some(file_stem(path)),
+        usage: Vec::new(),
     })
+}
+
+/// 流式逐行读取文本，对每个非空行调用 f（行缓冲复用，不为每行分配）。
+/// 调用方可以先做廉价的子串预筛，只对相关行做 JSON 解析——
+/// 几百 MB 的 rollout 里绝大多数是工具输出，整行解析成 Value 是扫描的主要开销。
+/// 返回是否成功打开了文件。
+pub fn for_each_line<F: FnMut(&str)>(path: &Path, mut f: F) -> bool {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut reader = BufReader::with_capacity(1 << 20, file);
+    let mut buf: Vec<u8> = Vec::with_capacity(1 << 16);
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            // 读到一半出错（文件被截断/占用）：已读部分照常处理，后面放弃
+            Err(_) => break,
+        }
+        let line = match std::str::from_utf8(&buf) {
+            Ok(s) => std::borrow::Cow::Borrowed(s),
+            Err(_) => String::from_utf8_lossy(&buf),
+        };
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            f(trimmed);
+        }
+    }
+    true
 }
 
 /// 流式逐行读取 JSONL，对每一行调用 f；单行解析失败只跳过，不中断。
 /// 返回是否成功打开了文件。
 pub fn for_each_jsonl_line<F: FnMut(serde_json::Value)>(path: &Path, mut f: F) -> bool {
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let reader = BufReader::with_capacity(1 << 20, file);
-    for line in reader.lines() {
-        let Ok(line) = line else { continue };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+    for_each_line(path, |line| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             f(v);
         }
+    })
+}
+
+/// 按模型刊例价构造一条用量事件；multiplier 用于 fast 模式等加价
+pub fn priced_event(ts: i64, model: &str, t: Tokens, multiplier: f64) -> UsageEvent {
+    let cost = pricing::cost(model, &t);
+    UsageEvent {
+        ts,
+        model: model.to_string(),
+        input: t.input,
+        output: t.output,
+        cache_read: t.cache_read,
+        cache_write: t.cache_write,
+        cost_usd: cost.unwrap_or(0.0) * multiplier,
+        priced: cost.is_some(),
+        requests: 1,
     }
-    true
 }
 
 pub fn parse_iso_ms(s: &str) -> Option<i64> {

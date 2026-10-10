@@ -5,7 +5,8 @@ use rusqlite::{Connection, OpenFlags};
 use super::claude_code::non_empty;
 use super::util::*;
 use super::{DetectCtx, HarnessAdapter};
-use crate::models::{Capabilities, MessagePreview, RawRef, ResumeSpec, Session};
+use crate::models::{Capabilities, MessagePreview, RawRef, ResumeSpec, Session, UsageEvent};
+use crate::pricing::Tokens;
 
 /// OpenCode 与 Zcode 共用同一套 drizzle SQLite schema（session/message/part，data 为 JSON 列）。
 struct SqliteConfig {
@@ -60,51 +61,45 @@ fn expand_argv(template: &[&str], session_id: &str) -> Vec<String> {
         .collect()
 }
 
-/// 按模型族刊例价估算（美元/百万 token：输入, 输出, 缓存读；缓存写按输入价）。
-/// 自定义 provider 的模型按同代公开价取近似档。
-fn family_price(model: &str) -> (f64, f64, f64) {
-    let m = model.to_lowercase();
-    if m.contains("deepseek") {
-        (0.27, 1.10, 0.07)
-    } else if m.contains("kimi") {
-        (0.60, 2.50, 0.15)
-    } else if m.contains("grok") {
-        (3.0, 15.0, 0.75)
-    } else if m.contains("glm") {
-        (0.60, 2.20, 0.15)
-    } else if m.contains("qwen") {
-        (0.20, 0.60, 0.05)
-    } else {
-        (1.0, 4.0, 0.25) // 未知模型的保守通用价
-    }
-}
+type UsageMap = std::collections::HashMap<String, Vec<UsageEvent>>;
 
-/// 从 model_usage 按 session 聚合 token 与估算费用（zcode 的 session 表没有这些列）。
-/// 返回 (聚合结果, 错误数)：usage_pricing 模式下 model_usage 缺失或查询失败
-/// 必须显式报错，否则旧库/字段变化会让统计永久缺失且被误标迁移完成
-type UsageMap = std::collections::HashMap<String, (u64, u64, u64, u64, u64, f64)>;
-
-fn aggregate_usage(conn: &Connection) -> (UsageMap, usize) {
-    let mut map = std::collections::HashMap::new();
+/// Zcode：从 model_usage 逐请求取用量（session 表没有用量列）。
+/// 实测 `input_tokens` 已包含缓存读写（computed_total = input + output），
+/// 旧实现把缓存读又加了一遍，输入被放大约 2 倍、费用按全价重复计算。
+/// 返回 (按会话的明细, 错误数)：表缺失或查询失败必须报错，
+/// 否则旧库/字段变化会让统计永久缺失且被误标迁移完成
+fn zcode_usage(conn: &Connection) -> (UsageMap, usize) {
+    let mut map = UsageMap::new();
     if !table_exists(conn, "model_usage") {
         return (map, 1);
     }
-    let sql = "SELECT session_id, model_id, \
-               SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), \
-               SUM(cache_creation_input_tokens), SUM(cache_read_input_tokens) \
-               FROM model_usage GROUP BY session_id, model_id";
-    let Ok(mut stmt) = conn.prepare(sql) else {
+    let cols = columns_of(conn, "model_usage");
+    let has = |c: &str| cols.iter().any(|x| x == c);
+    let ts_col = if has("started_at") { "started_at" } else { "0" };
+    let total_col = if has("computed_total_tokens") {
+        "computed_total_tokens"
+    } else {
+        "0"
+    };
+    let sql = format!(
+        "SELECT session_id, model_id, {ts_col}, input_tokens, output_tokens, reasoning_tokens, \
+         cache_creation_input_tokens, cache_read_input_tokens, {total_col} \
+         FROM model_usage WHERE input_tokens > 0 OR output_tokens > 0"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
         return (map, 1);
     };
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, i64>(2)?,
-            r.get::<_, i64>(3)?,
-            r.get::<_, i64>(4)?,
-            r.get::<_, i64>(5)?,
-            r.get::<_, i64>(6)?,
+            r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            r.get::<_, i64>(3)?.max(0) as u64,
+            r.get::<_, i64>(4)?.max(0) as u64,
+            r.get::<_, i64>(5)?.max(0) as u64,
+            r.get::<_, i64>(6)?.max(0) as u64,
+            r.get::<_, i64>(7)?.max(0) as u64,
+            r.get::<_, Option<i64>>(8)?.unwrap_or(0).max(0) as u64,
         ))
     });
     let Ok(rows) = rows else {
@@ -112,27 +107,101 @@ fn aggregate_usage(conn: &Connection) -> (UsageMap, usize) {
     };
     let mut errors = 0usize;
     for r in rows {
-        let Ok(r) = r else {
+        let Ok((sid, model, ts, input, output, reasoning, cache_w, cache_r, total)) = r else {
             errors += 1;
             continue;
         };
-        let (sid, model, input, output, reasoning, cache_w, cache_r) = r;
-        let (pi, po, pcr) = family_price(&model);
-        let cost = (input.max(0) as f64 * pi
-            + output.max(0) as f64 * po
-            + reasoning.max(0) as f64 * po
-            + cache_w.max(0) as f64 * pi
-            + cache_r.max(0) as f64 * pcr)
-            / 1e6;
-        let e = map.entry(sid).or_insert((0, 0, 0, 0, 0, 0.0));
-        e.0 += input.max(0) as u64;
-        e.1 += output.max(0) as u64;
-        e.2 += reasoning.max(0) as u64;
-        e.3 += cache_w.max(0) as u64;
-        e.4 += cache_r.max(0) as u64;
-        e.5 += cost;
+        // 输入包含缓存时扣掉缓存部分；个别 provider 若报告的是不含缓存的输入则原样使用
+        let uncached = if input >= cache_r + cache_w {
+            input - cache_r - cache_w
+        } else {
+            input
+        };
+        // 推理 token：总数里单列时才额外计入输出
+        let output = if reasoning > 0 && total >= input + output + reasoning {
+            output + reasoning
+        } else {
+            output
+        };
+        let t = Tokens {
+            input: uncached,
+            output,
+            cache_read: cache_r,
+            cache_write: cache_w,
+            cache_write_1h: 0,
+        };
+        map.entry(sid)
+            .or_default()
+            .push(priced_event(ts, &model, t, 1.0));
     }
     (map, errors)
+}
+
+/// OpenCode：逐条 assistant 消息取用量。OpenCode 自带按 models.dev 计算的真实费用，
+/// 有就用；为 0（订阅制/自定义 provider）时按刊例价估算，口径与其它 harness 一致
+fn opencode_usage(conn: &Connection) -> (UsageMap, usize) {
+    let mut map = UsageMap::new();
+    if !table_exists(conn, "message") {
+        return (map, 0);
+    }
+    let cols = columns_of(conn, "message");
+    if !cols.iter().any(|c| c == "session_id") || !cols.iter().any(|c| c == "data") {
+        return (map, 0);
+    }
+    let ts_expr = if cols.iter().any(|c| c == "time_created") {
+        "COALESCE(json_extract(data,'$.time.created'), time_created)"
+    } else {
+        "json_extract(data,'$.time.created')"
+    };
+    let sql = format!(
+        "SELECT session_id, {ts_expr}, COALESCE(json_extract(data,'$.modelID'),''), \
+            COALESCE(json_extract(data,'$.tokens.input'),0), \
+            COALESCE(json_extract(data,'$.tokens.output'),0), \
+            COALESCE(json_extract(data,'$.tokens.reasoning'),0), \
+            COALESCE(json_extract(data,'$.tokens.cache.read'),0), \
+            COALESCE(json_extract(data,'$.tokens.cache.write'),0), \
+            COALESCE(json_extract(data,'$.cost'),0) \
+         FROM message WHERE json_extract(data,'$.role')='assistant'"
+    );
+    // JSON1 不可用或 schema 不符：退回 session 表的汇总列，不算错误
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return (map, 0);
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<f64>>(1)?.unwrap_or(0.0) as i64,
+            r.get::<_, String>(2)?,
+            r.get::<_, f64>(3)?.max(0.0) as u64,
+            r.get::<_, f64>(4)?.max(0.0) as u64,
+            r.get::<_, f64>(5)?.max(0.0) as u64,
+            r.get::<_, f64>(6)?.max(0.0) as u64,
+            r.get::<_, f64>(7)?.max(0.0) as u64,
+            r.get::<_, f64>(8)?.max(0.0),
+        ))
+    });
+    let Ok(rows) = rows else {
+        return (map, 0);
+    };
+    for (sid, ts, model, input, output, reasoning, cache_r, cache_w, cost) in rows.flatten() {
+        let t = Tokens {
+            input,
+            output: output + reasoning,
+            cache_read: cache_r,
+            cache_write: cache_w,
+            cache_write_1h: 0,
+        };
+        if t.input + t.output + t.cache_read + t.cache_write == 0 && cost == 0.0 {
+            continue;
+        }
+        let mut e = priced_event(ts, &model, t, 1.0);
+        if cost > 0.0 {
+            e.cost_usd = cost;
+            e.priced = true;
+        }
+        map.entry(sid).or_default().push(e);
+    }
+    (map, 0)
 }
 
 pub struct OpenCodeAdapter;
@@ -187,6 +256,7 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
         "tokens_cache_read",
         "tokens_cache_write",
         "parent_id",
+        "model",
     ];
     let selected: Vec<&str> = wanted.into_iter().filter(|c| has(c)).collect();
     if !selected.contains(&"id") {
@@ -210,12 +280,12 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
         }
     }
 
-    // session 表没有用量列时（zcode），从 model_usage 聚合 token 与估算费用；
-    // 聚合失败计入错误，阻断 prune 和迁移版本写入
-    let (usage, usage_errors) = if cfg.usage_pricing {
-        aggregate_usage(&conn)
+    // 逐请求用量明细：zcode 来自 model_usage，opencode 来自 message；
+    // zcode 聚合失败计入错误，阻断 prune 和迁移版本写入
+    let (mut usage, usage_errors) = if cfg.usage_pricing {
+        zcode_usage(&conn)
     } else {
-        (std::collections::HashMap::new(), 0)
+        opencode_usage(&conn)
     };
     errors += usage_errors;
 
@@ -272,46 +342,18 @@ fn enumerate_db(cfg: &SqliteConfig, db_path: &Path) -> (Vec<RawRef>, usize) {
                                         row.as_object_mut()
                                             .map(|m| m.insert("message_count".into(), (*c).into()));
                                     }
-                                    // 注入聚合用量：仅在 session 行本身缺省时
-                                    if let Some(u) = usage.get(id) {
-                                        let missing = |k: &str| {
-                                            row.get(k)
-                                                .map(|v| v.is_null() || v.as_f64() == Some(0.0))
-                                                .unwrap_or(true)
-                                        };
-                                        let mut updates: Vec<(&str, serde_json::Value)> =
-                                            Vec::new();
-                                        if missing("tokens_input") {
-                                            updates.push(("tokens_input", u.0.into()));
-                                        }
-                                        if missing("tokens_output") {
-                                            updates.push(("tokens_output", u.1.into()));
-                                        }
-                                        if missing("tokens_reasoning") {
-                                            updates.push(("tokens_reasoning", u.2.into()));
-                                        }
-                                        if missing("tokens_cache_write") {
-                                            updates.push(("tokens_cache_write", u.3.into()));
-                                        }
-                                        if missing("tokens_cache_read") {
-                                            updates.push(("tokens_cache_read", u.4.into()));
-                                        }
-                                        if missing("cost") && u.5 > 0.0 {
-                                            updates.push(("cost", serde_json::Value::from(u.5)));
-                                        }
-                                        if let Some(m) = row.as_object_mut() {
-                                            for (k, v) in updates {
-                                                m.insert(k.to_string(), v);
-                                            }
-                                        }
-                                    }
                                 }
+                                let events = identity
+                                    .as_deref()
+                                    .and_then(|id| usage.remove(id))
+                                    .unwrap_or_default();
                                 out.push(RawRef {
                                     path: db_path.to_path_buf(),
                                     size,
                                     mtime_ms: mtime,
                                     inline: Some(row),
                                     identity,
+                                    usage: events,
                                 });
                             }
                             Err(_) => errors += 1,
@@ -331,19 +373,33 @@ fn parse_row(cfg: &SqliteConfig, raw: &RawRef) -> Option<Session> {
     let id = json_str(row, "id")?.to_string();
     let created = json_i64(row, "time_created");
     let updated = json_i64(row, "time_updated").or(created);
-    let tokens_in = json_u64(row, "tokens_input").unwrap_or(0)
-        + json_u64(row, "tokens_cache_read").unwrap_or(0)
-        + json_u64(row, "tokens_cache_write").unwrap_or(0);
-    let tokens_out = json_u64(row, "tokens_output").unwrap_or(0)
-        + json_u64(row, "tokens_reasoning").unwrap_or(0);
-    let cost = row
-        .get("cost")
-        .and_then(|c| c.as_f64())
-        .filter(|c| *c > 0.0);
     let title = json_str(row, "title").unwrap_or("").to_string();
     let is_sub = row.get("parent_id").and_then(|p| p.as_str()).is_some();
 
-    Some(Session {
+    // 明细优先；没有明细时退回 session 行自带的汇总列，作为一条落在最后活动时间的明细
+    let mut usage = raw.usage.clone();
+    if usage.is_empty() {
+        let t = Tokens {
+            input: json_u64(row, "tokens_input").unwrap_or(0),
+            output: json_u64(row, "tokens_output").unwrap_or(0)
+                + json_u64(row, "tokens_reasoning").unwrap_or(0),
+            cache_read: json_u64(row, "tokens_cache_read").unwrap_or(0),
+            cache_write: json_u64(row, "tokens_cache_write").unwrap_or(0),
+            cache_write_1h: 0,
+        };
+        let cost = row.get("cost").and_then(|c| c.as_f64()).unwrap_or(0.0);
+        if t.input + t.output + t.cache_read + t.cache_write > 0 || cost > 0.0 {
+            let model = json_str(row, "model").unwrap_or("");
+            let mut e = priced_event(updated.unwrap_or(raw.mtime_ms), model, t, 1.0);
+            if cost > 0.0 {
+                e.cost_usd = cost;
+                e.priced = true;
+            }
+            usage.push(e);
+        }
+    }
+
+    let mut session = Session {
         session_id: id,
         harness_id: cfg.id.to_string(),
         project_path: json_str(row, "directory").unwrap_or("").to_string(),
@@ -355,19 +411,16 @@ fn parse_row(cfg: &SqliteConfig, raw: &RawRef) -> Option<Session> {
         started_at: created,
         ended_at: updated,
         message_count: json_u64(row, "message_count").map(|n| n as u32),
-        tokens_in: if tokens_in > 0 { Some(tokens_in) } else { None },
-        tokens_out: if tokens_out > 0 {
-            Some(tokens_out)
-        } else {
-            None
-        },
-        cost_usd: cost,
         status: derive_status(updated.unwrap_or(raw.mtime_ms)),
         raw_path: raw.path.to_string_lossy().into_owned(),
         source_format: cfg.source_format.to_string(),
         file_size: raw.size,
         file_mtime: raw.mtime_ms,
-    })
+        usage,
+        ..Default::default()
+    };
+    session.apply_usage_totals();
+    Some(session)
 }
 
 fn read_messages_db(
@@ -575,7 +628,7 @@ mod tests {
                     cache_read_input_tokens integer not null default 0);
                  INSERT INTO session(id, title) VALUES ('s1', 't1');
                  INSERT INTO model_usage(id, session_id, model_id, input_tokens, output_tokens, cache_read_input_tokens)
-                 VALUES ('m1', 's1', 'deepseek-v4-flash', 1000000, 100000, 2000000),
+                 VALUES ('m1', 's1', 'deepseek-v4-flash', 3000000, 100000, 2000000),
                         ('m2', 's1', 'deepseek-v4-flash', 500000, 50000, 0);",
             )
             .unwrap();
@@ -586,12 +639,17 @@ mod tests {
         let adapter = ZcodeAdapter;
         let s = adapter.parse(&raws[0]).unwrap();
         assert_eq!(s.session_id, "s1");
-        // tokens_in = 1.5M input + 2M cache_read；tokens_out = 150K
-        assert_eq!(s.tokens_in, Some(3_500_000));
+        // zcode 的 input_tokens 已含缓存读：m1 的 3M 输入里 2M 是缓存命中，
+        // 不能再把缓存读加一遍（旧实现会得到 5.5M，且缓存部分按全价重复计费）
+        assert_eq!(s.tokens_in, Some(3_000_000 + 500_000));
+        assert_eq!(s.usage[0].input + s.usage[1].input, 1_500_000);
         assert_eq!(s.tokens_out, Some(150_000));
-        // deepseek 刊例：1.5M×$0.27 + 150K×$1.10 + 2M×$0.07 = $0.71
+        assert_eq!(s.usage.len(), 2);
+        // m1：未命中 1M×$0.14 + 命中 2M×$0.0028 + 输出 100K×$0.28
+        // m2：未命中 0.5M×$0.14 + 输出 50K×$0.28
+        let expect = 0.14 + 2.0 * 0.0028 + 0.1 * 0.28 + 0.5 * 0.14 + 0.05 * 0.28;
         let cost = s.cost_usd.expect("应估算费用");
-        assert!((cost - 0.71).abs() < 1e-6, "cost = {cost}");
+        assert!((cost - expect).abs() < 1e-9, "cost = {cost}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

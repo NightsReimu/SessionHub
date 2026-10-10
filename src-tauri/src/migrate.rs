@@ -469,6 +469,7 @@ mod tests {
             source_format: "jsonl".to_string(),
             file_size: 0,
             file_mtime: 0,
+            ..Default::default()
         };
         let msgs = fake_messages();
         let full = dir.join("abc.jsonl");

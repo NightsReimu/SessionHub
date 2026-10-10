@@ -1,10 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { AdapterInfo, MessagePreview, SessionDto, api } from "../api";
-import { fmtTime, fmtTokens } from "./SessionList";
-import { CloseIcon, ExternalIcon, PlayIcon, StarIcon } from "./icons";
+import { fmtDateTime, fmtTime, fmtTokens, fmtUsd, shortPath } from "../lib/format";
+import { harnessName } from "../lib/harness";
+import {
+  ArchiveIcon,
+  ChatIcon,
+  CloseIcon,
+  DownloadIcon,
+  ExternalIcon,
+  FolderIcon,
+  PencilIcon,
+  PlayIcon,
+  StarIcon,
+  SwapIcon,
+  TrashIcon,
+} from "./icons";
 import MessageText from "./MessageText";
-import { Toast } from "../App";
+import { Button, EmptyState, HarnessTag, IconButton, Toast } from "./ui";
 
 interface Props {
   session: SessionDto;
@@ -16,8 +29,46 @@ interface Props {
   toast: (kind: Toast["kind"], text: string) => void;
 }
 
-const btn =
-  "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-white/[0.04] border border-white/[0.07] text-mut hover:text-ink hover:bg-white/[0.08] transition-colors disabled:opacity-40 disabled:hover:bg-white/[0.04] disabled:hover:text-mut";
+const MIGRATE_TARGETS = ["claude-code", "codex", "opencode"];
+
+/** 对话气泡列表：只随消息数组变化重渲染（扫描进度等父级更新不会波及） */
+const MessageList = memo(function MessageList({ messages }: { messages: MessagePreview[] }) {
+  return (
+    <div className="flex flex-col gap-3">
+      {messages.map((m, i) => {
+        const isUser = m.role === "user";
+        return (
+          <div key={i} className={`msg-bubble flex flex-col ${isUser ? "items-end" : "items-start"}`}>
+            <div className="flex items-center gap-2 mb-1 px-1 text-[11px] text-muted">
+              <span className="font-medium text-ink-2">
+                {isUser ? "你" : m.role === "assistant" ? "AI" : m.role}
+              </span>
+              {m.timestamp && <span className="tnum">{fmtDateTime(m.timestamp)}</span>}
+            </div>
+            <div
+              className={`max-w-[92%] rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words select-text ${
+                isUser
+                  ? "bg-accent-soft text-ink rounded-tr-md"
+                  : "bg-surface-2 text-ink border border-line rounded-tl-md"
+              }`}
+            >
+              <MessageText text={m.text} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div className="min-w-0" title={title}>
+      <div className="text-[11px] text-muted">{label}</div>
+      <div className="text-[13px] font-medium text-ink tnum truncate mt-0.5">{value}</div>
+    </div>
+  );
+}
 
 export default function SessionDetail({ session, adapters, onPatch, onRemoved, onClose, onMigrated, toast }: Props) {
   const [tagInput, setTagInput] = useState("");
@@ -60,6 +111,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
         api.setMeta(harnessId, sessionId, pending).catch((e) => console.error("切换时保存备注失败", e));
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.harness_id, session.session_id]);
 
   const loadMessages = useCallback(() => {
@@ -81,8 +133,7 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
       });
   }, [session.harness_id, session.session_id]);
 
-  // 会话切换：在同一个 effect 里完成重置和加载，
-  // 避免「清空」与「请求」分布在两个 effect 导致的读到旧状态/不触发
+  // 会话切换：在同一个 effect 里完成重置和加载
   useEffect(() => {
     setMessages(null);
     setMsgError(null);
@@ -176,36 +227,32 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
     }
   };
 
-  const totalTokens = (session.tokens_in ?? 0) + (session.tokens_out ?? 0);
   const displayTitle = session.meta.custom_title?.trim() || session.title || "(无标题)";
 
   const commitTitle = () => {
     const v = titleDraft.trim();
     setEditingTitle(false);
     const current = session.meta.custom_title?.trim() || session.title;
-    if (v === current) return; // 无变化
+    if (v === current) return;
     // 留空 = 恢复 harness 原标题（custom_title 置空）
     saveMeta({ custom_title: v || null });
   };
 
-  const chip = (text: string) => (
-    <span key={text} className="px-2 py-1 rounded-md bg-white/[0.05] border border-white/[0.08] text-mut">
-      {text}
-    </span>
-  );
+  const tokensIn = session.tokens_in ?? 0;
+  const tokensOut = session.tokens_out ?? 0;
 
   return (
-    <div className="w-[520px] shrink-0 rounded-xl glass flex flex-col overflow-hidden">
-      {/* 头部：标题 + 操作 + 概要 */}
-      <div className="px-5 pt-4 pb-3.5 border-b border-white/[0.06] space-y-3">
+    <section className="w-[540px] shrink-0 panel flex flex-col overflow-hidden">
+      {/* 头部 */}
+      <div className="px-5 pt-4 pb-4 border-b border-line space-y-3.5">
         <div className="flex items-start gap-2">
-          <button
+          <IconButton
             onClick={() => saveMeta({ favorite: !metaRef.current.favorite })}
-            className="mt-0.5 shrink-0"
-            title="收藏"
+            className="-ml-1.5 mt-[-2px]"
+            title={session.meta.favorite ? "取消收藏" : "收藏"}
           >
-            <StarIcon filled={session.meta.favorite} className="w-5 h-5" />
-          </button>
+            <StarIcon filled={session.meta.favorite} className="w-4 h-4" />
+          </IconButton>
           <div className="flex-1 min-w-0">
             {editingTitle ? (
               <input
@@ -218,33 +265,34 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
                 }}
                 onBlur={commitTitle}
                 placeholder="输入自定义标题，留空恢复默认"
-                className="w-full bg-page border border-accent/50 rounded-lg px-2.5 py-1.5 text-[15px] font-medium text-ink outline-none"
+                className="w-full bg-surface border border-accent rounded-lg px-2.5 py-1 text-[15px] font-semibold text-ink outline-none"
               />
             ) : (
-              <div className="group/title flex items-start gap-1.5">
-                <h2 className="text-[15px] font-medium text-ink leading-snug break-words flex-1">
+              <div className="group/title flex items-start gap-1">
+                <h2 className="text-[15px] font-semibold text-ink leading-snug break-words flex-1 select-text">
                   {displayTitle}
                 </h2>
-                <button
+                <IconButton
                   onClick={() => {
                     setTitleDraft(session.meta.custom_title?.trim() || session.title);
                     setEditingTitle(true);
                   }}
-                  className="shrink-0 mt-1 p-0.5 text-dim opacity-0 group-hover/title:opacity-100 hover:text-mut transition-opacity"
+                  className="opacity-0 group-hover/title:opacity-100 w-6 h-6"
                   title="编辑标题"
                 >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.86 3.49a2.12 2.12 0 013 3L8.5 17.86 4 19l1.14-4.5L16.86 3.49z" />
-                  </svg>
-                </button>
+                  <PencilIcon className="w-3.5 h-3.5" />
+                </IconButton>
               </div>
             )}
-            <div className="flex items-center gap-2 mt-1">
-              <div className="text-[11px] text-dim mono truncate">{session.session_id}</div>
+            <div className="flex items-center gap-2 mt-2 min-w-0">
+              <HarnessTag id={session.harness_id} compact />
+              <span className="text-[11px] text-muted mono truncate select-text" title={session.session_id}>
+                {session.session_id}
+              </span>
               {session.meta.custom_title && !editingTitle && (
                 <button
                   onClick={() => saveMeta({ custom_title: null })}
-                  className="shrink-0 text-[10px] text-dim hover:text-mut underline underline-offset-2"
+                  className="shrink-0 text-[11px] text-muted hover:text-ink underline underline-offset-2"
                   title="恢复 harness 原标题"
                 >
                   重置标题
@@ -252,73 +300,111 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
               )}
             </div>
           </div>
-          <button onClick={onClose} className="shrink-0 p-1 text-dim hover:text-ink" title="关闭">
+          <IconButton onClick={onClose} title="关闭" className="-mr-1.5 mt-[-2px]">
             <CloseIcon className="w-4 h-4" />
-          </button>
+          </IconButton>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-accent text-black hover:bg-accent-strong transition-colors disabled:opacity-40"
+        <div className="grid grid-cols-4 gap-3 px-3 py-2.5 rounded-lg bg-surface-2 border border-line">
+          <Stat label="最后活动" value={fmtTime(session.ended_at)} title={fmtDateTime(session.ended_at)} />
+          <Stat label="消息" value={session.message_count != null ? `${session.message_count} 条` : "—"} />
+          <Stat
+            label="Tokens"
+            value={tokensIn + tokensOut > 0 ? fmtTokens(tokensIn + tokensOut) : "—"}
+            title={`输入（含缓存）${fmtTokens(tokensIn)} · 输出 ${fmtTokens(tokensOut)}`}
+          />
+          <Stat label="估算费用" value={session.cost_usd ? fmtUsd(session.cost_usd) : "—"} />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            variant="primary"
+            size="sm"
             disabled={busy || !caps?.can_resume}
-            title={caps?.can_resume ? "在终端中打开此对话" : "该 harness 暂不支持续接"}
+            title={caps?.can_resume ? "在终端中继续这个对话" : "该 harness 暂不支持续接"}
             onClick={() => run(() => api.resume(session.harness_id, session.session_id), "已拉起终端")}
           >
             <PlayIcon className="w-3 h-3" />
             续接对话
-          </button>
-          <button
-            className={btn}
+          </Button>
+          <Button
+            size="sm"
             disabled={busy || !caps?.can_launch}
-            title={caps?.can_launch ? "打开 harness 本身" : "该 harness 不支持直接打开"}
+            title={caps?.can_launch ? `在项目目录打开 ${harnessName(session.harness_id)}` : "该 harness 不支持直接打开"}
             onClick={() => run(() => api.launchHarness(session.harness_id, session.session_id), "已打开")}
           >
             <ExternalIcon className="w-3.5 h-3.5" />
-            打开 Harness
-          </button>
-          <button
-            className={btn}
+            打开
+          </Button>
+          <Button
+            size="sm"
             disabled={busy || !caps?.can_backup || !rawOk}
-            title={!rawOk ? "独立存储目录缺失，无法备份" : "复制原始文件到 ~/SessionHub/backups"}
+            title={!rawOk ? "独立存储目录缺失，无法备份" : "复制原始文件到指定目录"}
             onClick={backupTo}
           >
+            <ArchiveIcon className="w-3.5 h-3.5" />
             备份
-          </button>
-          <button className={btn} disabled={busy} title="选择保存位置，导出 Markdown" onClick={() => exportAs("md")}>
-            导出 MD
-          </button>
-          <button className={btn} disabled={busy} title="选择保存位置，导出 JSONL" onClick={() => exportAs("jsonl")}>
-            导出 JSONL
-          </button>
-          {caps?.can_read_messages && (
+          </Button>
+          <label
+            className={`relative inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-lg border border-line bg-surface text-ink hover:bg-surface-2 transition-colors ${
+              busy ? "opacity-45 pointer-events-none" : "cursor-pointer"
+            }`}
+            title="导出完整对话"
+          >
+            <DownloadIcon className="w-3.5 h-3.5" />
+            导出
             <select
-              className={btn + " appearance-none cursor-pointer"}
+              className="absolute inset-0 opacity-0 cursor-pointer"
               disabled={busy}
               value=""
-              title="把该会话转换为目标 harness 的原生格式，可在目标 harness 中续接调用"
               onChange={(e) => {
-                const target = e.target.value;
+                const f = e.target.value as "md" | "jsonl" | "";
                 e.target.value = "";
-                if (!target) return;
-                run(async () => {
-                  const r = await api.migrate(session.harness_id, session.session_id, target);
-                  onMigrated();
-                  return `${r.path}\n在 ${target} 中运行：${r.resume_command}`;
-                }, "已迁移");
+                if (f) exportAs(f);
               }}
             >
-              <option value="">迁移到…</option>
-              {["claude-code", "codex", "opencode"]
-                .filter((t) => t !== session.harness_id)
-                .map((t) => (
-                  <option key={t} value={t} className="bg-zinc-900">
-                    {t === "claude-code" ? "Claude Code" : t === "codex" ? "Codex" : t === "opencode" ? "OpenCode" : "Zcode"}
+              <option value="">导出为…</option>
+              <option value="md">Markdown (.md)</option>
+              <option value="jsonl">JSONL (.jsonl)</option>
+            </select>
+          </label>
+          {canRead && (
+            <label
+              className={`relative inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-lg border border-line bg-surface text-ink hover:bg-surface-2 transition-colors ${
+                busy ? "opacity-45 pointer-events-none" : "cursor-pointer"
+              }`}
+              title="把会话转换成目标 harness 的原生格式，然后可以在目标 harness 里续接"
+            >
+              <SwapIcon className="w-3.5 h-3.5" />
+              迁移
+              <select
+                className="absolute inset-0 opacity-0 cursor-pointer"
+                disabled={busy}
+                value=""
+                onChange={(e) => {
+                  const target = e.target.value;
+                  e.target.value = "";
+                  if (!target) return;
+                  run(async () => {
+                    const r = await api.migrate(session.harness_id, session.session_id, target);
+                    onMigrated();
+                    return `${r.path}\n在 ${harnessName(target)} 中运行：${r.resume_command}`;
+                  }, "已迁移");
+                }}
+              >
+                <option value="">迁移到…</option>
+                {MIGRATE_TARGETS.filter((t) => t !== session.harness_id).map((t) => (
+                  <option key={t} value={t}>
+                    {harnessName(t)}
                   </option>
                 ))}
-            </select>
+              </select>
+            </label>
           )}
-          <button
-            className={btn + " text-red-400 hover:bg-red-950/60"}
+          <span className="flex-1" />
+          <Button
+            variant="danger"
+            size="sm"
             disabled={busy || !caps?.can_delete || !rawOk}
             title={
               !caps?.can_delete
@@ -329,27 +415,24 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
             }
             onClick={onDelete}
           >
+            <TrashIcon className="w-3.5 h-3.5" />
             删除
-          </button>
-        </div>
-
-        <div className="flex flex-wrap gap-1.5 text-[11px]">
-          {chip(`开始 ${session.started_at ? new Date(session.started_at).toLocaleString("zh-CN", { hour12: false }) : "—"}`)}
-          {chip(`活动 ${fmtTime(session.ended_at)}`)}
-          {chip(session.message_count != null ? `${session.message_count} 条` : "— 条")}
-          {totalTokens > 0 && chip(`${fmtTokens(totalTokens)} tok`)}
-          {session.cost_usd != null && session.cost_usd > 0 && chip(`$${session.cost_usd.toFixed(3)}`)}
+          </Button>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
           {session.meta.tags.map((t) => (
-            <span key={t} className="px-2 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08] text-[11px] text-mut flex items-center gap-1">
+            <span
+              key={t}
+              className="h-6 pl-2 pr-1 rounded-md bg-surface-2 border border-line text-xs text-ink-2 flex items-center gap-1"
+            >
               {t}
               <button
-                className="text-dim hover:text-red-400 leading-none"
+                className="w-4 h-4 flex items-center justify-center rounded text-muted hover:text-danger"
                 onClick={() => saveMeta({ tags: metaRef.current.tags.filter((x) => x !== t) })}
+                title="移除标签"
               >
-                ×
+                <CloseIcon className="w-3 h-3" />
               </button>
             </span>
           ))}
@@ -357,110 +440,104 @@ export default function SessionDetail({ session, adapters, onPatch, onRemoved, o
             value={tagInput}
             onChange={(e) => setTagInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addTag()}
-            placeholder="+ 标签"
-            className="w-16 bg-transparent text-[11px] outline-none border-b border-transparent focus:border-accent px-1 py-0.5 text-mut"
+            placeholder="+ 添加标签"
+            className="w-24 h-6 bg-transparent text-xs outline-none rounded-md px-1.5 text-ink-2 placeholder:text-muted focus:bg-surface-2"
           />
         </div>
 
         {!rawOk && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/90">
+          <div className="rounded-lg border border-warn/30 bg-warn-soft px-3 py-2 text-xs text-warn">
             该会话的独立存储目录缺失，raw 指向共享/全局文件——删除、备份、定位已禁用
           </div>
         )}
       </div>
 
       {/* 对话记录 */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 bg-bg/40">
         {msgLoading && messages === null ? (
           <div className="space-y-3">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="h-16 rounded-xl bg-white/5 animate-pulse" />
+              <div
+                key={i}
+                className={`h-16 rounded-2xl bg-surface-2 animate-pulse ${i % 2 ? "ml-auto w-2/3" : "w-4/5"}`}
+              />
             ))}
           </div>
         ) : msgError ? (
-          <div className="text-center py-10 space-y-3">
-            <div className="text-sm text-dim">读取消息失败：{msgError}</div>
-            <button className={btn} onClick={loadMessages}>
-              重试
-            </button>
-          </div>
+          <EmptyState
+            title="读取消息失败"
+            hint={msgError}
+            action={
+              <Button size="sm" onClick={loadMessages}>
+                重试
+              </Button>
+            }
+          />
         ) : messages && messages.length > 0 ? (
-          <div className="flex flex-col gap-2.5">
-            {messages.map((m, i) => {
-              const isUser = m.role === "user";
-              return (
-                <div
-                  key={i}
-                  className={`max-w-[92%] rounded-xl border px-3.5 py-2.5 ${
-                    isUser
-                      ? "self-end bg-accent/10 border-accent/30"
-                      : "self-start bg-white/[0.05] border-white/[0.08]"
-                  }`}
-                >
-                  <div className="text-[10px] uppercase tracking-wider mb-1 text-dim flex items-center gap-2">
-                    <span>{isUser ? "你" : m.role === "assistant" ? "AI" : m.role}</span>
-                    {m.timestamp && (
-                      <span className="normal-case tracking-normal">
-                        {new Date(m.timestamp).toLocaleString("zh-CN", { hour12: false })}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[13px] leading-relaxed text-ink/90 whitespace-pre-wrap break-words select-text">
-                    <MessageText text={m.text} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <MessageList messages={messages} />
         ) : (
-          <div className="text-center py-10 text-sm text-dim">
-            {canRead ? "该会话没有读取到消息内容" : "该 harness 暂不支持查看消息"}
-          </div>
+          <EmptyState
+            icon={<ChatIcon className="w-7 h-7" />}
+            title={canRead ? "没有读到消息内容" : "该 harness 暂不支持查看消息"}
+          />
         )}
       </div>
 
       {/* 底部：详情与备注（折叠） */}
-      <div className="border-t border-white/[0.06]">
+      <div className="border-t border-line">
         <button
-          className="w-full px-5 py-2.5 text-[11px] text-dim hover:text-mut flex items-center justify-between"
+          className="w-full px-5 h-9 text-xs text-ink-2 hover:text-ink flex items-center justify-between"
           onClick={() => setShowInfo(!showInfo)}
         >
-          <span>详情与备注</span>
-          <span className="text-sm leading-none">{showInfo ? "−" : "+"}</span>
+          <span>详情与备注{session.meta.note ? " · 有备注" : ""}</span>
+          <span className="text-sm leading-none text-muted">{showInfo ? "−" : "+"}</span>
         </button>
         {showInfo && (
-          <div className="px-5 pb-4 space-y-3">
-            <div>
-              <div className="text-[11px] text-dim mb-0.5">项目路径</div>
-              <div className="text-xs mono text-mut break-all">{session.project_path || "—"}</div>
+          <div className="px-5 pb-4 space-y-3 animate-in">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-[11px] text-muted mb-0.5">开始时间</div>
+                <div className="text-xs text-ink-2 tnum">{fmtDateTime(session.started_at)}</div>
+              </div>
+              <div>
+                <div className="text-[11px] text-muted mb-0.5">输入 / 输出 Tokens</div>
+                <div className="text-xs text-ink-2 tnum">
+                  {fmtTokens(tokensIn)} / {fmtTokens(tokensOut)}
+                </div>
+              </div>
             </div>
             <div>
-              <div className="text-[11px] text-dim mb-0.5">原始文件（{session.source_format}）</div>
+              <div className="text-[11px] text-muted mb-0.5">项目路径</div>
+              <div className="text-xs mono text-ink-2 break-all select-text">{shortPath(session.project_path)}</div>
+            </div>
+            <div>
+              <div className="text-[11px] text-muted mb-0.5">原始文件（{session.source_format}）</div>
               {rawOk ? (
                 <button
                   onClick={() => run(() => api.reveal(session.harness_id, session.session_id), "已在文件管理器中显示")}
-                  className="text-xs mono text-accent hover:text-accent-strong break-all text-left"
+                  className="text-xs mono text-accent hover:underline break-all text-left inline-flex items-start gap-1"
                   disabled={busy}
                 >
+                  <FolderIcon className="w-3.5 h-3.5 shrink-0 mt-px" />
                   {session.raw_path}
                 </button>
               ) : (
-                <div className="text-xs mono text-dim break-all">{session.raw_path}</div>
+                <div className="text-xs mono text-muted break-all">{session.raw_path}</div>
               )}
             </div>
             <div>
-              <div className="text-[11px] text-dim mb-0.5">备注（只写入 SessionHub 数据库，不动 harness 文件）</div>
+              <div className="text-[11px] text-muted mb-1">备注（只写入 SessionHub 自己的数据库）</div>
               <textarea
                 value={note}
                 onChange={(e) => onNoteChange(e.target.value)}
                 rows={3}
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-2.5 py-2 text-sm text-ink outline-none focus:border-accent resize-y placeholder:text-dim"
+                className="w-full bg-surface-2 border border-line rounded-lg px-2.5 py-2 text-[13px] text-ink outline-none focus:border-accent resize-y placeholder:text-muted select-text"
                 placeholder="记录这个会话在做什么…"
               />
             </div>
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

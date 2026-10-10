@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use super::util::*;
 use super::{DetectCtx, HarnessAdapter};
 use crate::models::{Capabilities, MessagePreview, RawRef, ResumeSpec, Session};
+use crate::pricing::Tokens;
 
 /// Claude Code: ~/.claude/projects/<编码项目>/<id>.jsonl (+ 可选 sessions-index.json)
 pub struct ClaudeCodeAdapter;
@@ -102,38 +103,44 @@ impl HarnessAdapter for ClaudeCodeAdapter {
         let mut last_ts: Option<i64> = None;
         let mut msg_count: u32 = 0;
         let mut first_user_text: Option<String> = None;
-        // 按模型分桶累计 token（会话中途可能切换 Opus/Sonnet/Haiku）
-        let mut usage_by_model: std::collections::HashMap<String, (u64, u64, u64, u64)> =
-            std::collections::HashMap::new();
+        let mut usage = UsageCollector::default();
 
-        let ok = for_each_jsonl_line(&raw.path, |v| {
-            let ty = json_str(&v, "type").unwrap_or("");
-            if let Some(sid) = json_str(&v, "sessionId") {
-                if !sid.is_empty() {
+        let ok = for_each_line(&raw.path, |line| {
+            // 轻量结构化解析：message.content（工具输出的大头）被跳过不建树
+            let Ok(l) = serde_json::from_str::<CcLine>(line) else {
+                return;
+            };
+            if let Some(sid) = l.session_id.as_deref().filter(|s| !s.is_empty()) {
+                if sid != session_id {
                     session_id = sid.to_string();
                 }
             }
             if cwd.is_empty() {
-                if let Some(c) = json_str(&v, "cwd") {
+                if let Some(c) = l.cwd.as_deref() {
                     cwd = c.to_string();
                 }
             }
-            if let Some(ts) = json_str(&v, "timestamp").and_then(parse_iso_ms) {
+            let ts = l.timestamp.as_deref().and_then(parse_iso_ms);
+            if let Some(ts) = ts {
                 if first_ts.is_none_or(|f| ts < f) {
                     first_ts = Some(ts);
                 }
-                if last_ts.is_none_or(|l| ts > l) {
+                if last_ts.is_none_or(|x| ts > x) {
                     last_ts = Some(ts);
                 }
             }
-            match ty {
-                "user" => {
+            match l.ty.as_deref() {
+                Some("user") => {
                     msg_count += 1;
                     if first_user_text.is_none() {
-                        if let Some(t) = v
-                            .get("message")
-                            .and_then(|m| m.get("content"))
-                            .and_then(extract_claude_text)
+                        // 只有找标题时才把整行解析成 Value
+                        if let Some(t) = serde_json::from_str::<serde_json::Value>(line)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("message")
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(extract_claude_text)
+                            })
                         {
                             let t = t.trim().to_string();
                             // 跳过系统注入的命令回显等
@@ -143,24 +150,40 @@ impl HarnessAdapter for ClaudeCodeAdapter {
                         }
                     }
                 }
-                "assistant" => {
+                Some("assistant") => {
                     msg_count += 1;
-                    if let Some(m) = v.get("message") {
-                        if let Some(u) = m.get("usage") {
-                            let key = json_str(m, "model").unwrap_or("").to_lowercase();
-                            let e = usage_by_model.entry(key).or_default();
-                            e.0 += json_u64(u, "input_tokens").unwrap_or(0);
-                            e.1 += json_u64(u, "output_tokens").unwrap_or(0);
-                            e.2 += json_u64(u, "cache_creation_input_tokens").unwrap_or(0);
-                            e.3 += json_u64(u, "cache_read_input_tokens").unwrap_or(0);
-                        }
-                    }
+                    usage.push(&l, ts.or(last_ts));
                 }
                 _ => {}
             }
         });
         if !ok {
             return None;
+        }
+
+        // 子代理（Task 工具）的对话单独落在 <会话 id>/subagents/*.jsonl，
+        // 它们的 token 同样计费，归到父会话名下
+        if let Some(parent) = raw.path.parent() {
+            let sub_dir = parent.join(file_stem(&raw.path)).join("subagents");
+            if let Ok(entries) = std::fs::read_dir(&sub_dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    for_each_line(&p, |line| {
+                        if !line.contains("\"assistant\"") {
+                            return;
+                        }
+                        if let Ok(l) = serde_json::from_str::<CcLine>(line) {
+                            if l.ty.as_deref() == Some("assistant") {
+                                let ts = l.timestamp.as_deref().and_then(parse_iso_ms);
+                                usage.push(&l, ts.or(last_ts));
+                            }
+                        }
+                    });
+                }
+            }
         }
 
         // sessions-index.json 里的 summary / firstPrompt 是更好的标题来源
@@ -196,15 +219,7 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             .map(|n| n as u32)
             .or(if msg_count > 0 { Some(msg_count) } else { None });
 
-        let (mut tin, mut tout, mut tcw, mut tcr) = (0u64, 0u64, 0u64, 0u64);
-        for (i, o, w, r) in usage_by_model.values() {
-            tin += *i;
-            tout += *o;
-            tcw += *w;
-            tcr += *r;
-        }
-        let tokens_in = tin + tcw + tcr;
-        Some(Session {
+        let mut session = Session {
             session_id,
             harness_id: self.id().to_string(),
             project_path,
@@ -212,15 +227,16 @@ impl HarnessAdapter for ClaudeCodeAdapter {
             started_at: started,
             ended_at: ended,
             message_count: count,
-            tokens_in: if tokens_in > 0 { Some(tokens_in) } else { None },
-            tokens_out: if tout > 0 { Some(tout) } else { None },
-            cost_usd: claude_cost(&usage_by_model),
             status: derive_status(raw.mtime_ms),
             raw_path: raw.path.to_string_lossy().into_owned(),
             source_format: "jsonl".to_string(),
             file_size: raw.size,
             file_mtime: raw.mtime_ms,
-        })
+            usage: usage.events,
+            ..Default::default()
+        };
+        session.apply_usage_totals();
+        Some(session)
     }
 
     fn resume_spec(&self, s: &Session) -> Option<ResumeSpec> {
@@ -301,33 +317,102 @@ impl ClaudeCodeAdapter {
     }
 }
 
-/// 按模型刊例价（美元/百万 token：输入, 输出, 缓存写, 缓存读）。
-/// 未知模型返回 None——不计费，而不是静默套用默认价格。
-fn claude_price(model: &str) -> Option<(f64, f64, f64, f64)> {
-    if model.contains("opus") {
-        Some((15.0, 75.0, 18.75, 1.5))
-    } else if model.contains("haiku") {
-        Some((1.0, 5.0, 1.25, 0.1))
-    } else if model.contains("sonnet") {
-        Some((3.0, 15.0, 3.75, 0.3))
-    } else {
-        None
-    }
+/// Claude Code JSONL 的一行（只取统计需要的字段，其余由 serde 直接跳过）
+#[derive(serde::Deserialize)]
+struct CcLine {
+    #[serde(rename = "type")]
+    ty: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+    cwd: Option<String>,
+    timestamp: Option<String>,
+    #[serde(rename = "requestId")]
+    request_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    message: Option<CcMessage>,
 }
 
-/// 按模型分桶的费用估算（与 ccusage 同一路径：token 数 × 公开刊例价）
-fn claude_cost(by_model: &std::collections::HashMap<String, (u64, u64, u64, u64)>) -> Option<f64> {
-    let mut usd = 0.0;
-    for (model, (i, o, w, r)) in by_model {
-        let Some((pi, po, pcw, pcr)) = claude_price(model) else {
-            continue; // 未知模型（含无 model 字段的旧日志）不计费
+#[derive(serde::Deserialize)]
+struct CcMessage {
+    id: Option<String>,
+    model: Option<String>,
+    usage: Option<CcUsage>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct CcUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
+    cache_creation: Option<CcCacheCreation>,
+    speed: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct CcCacheCreation {
+    ephemeral_1h_input_tokens: Option<u64>,
+}
+
+/// message 字段形态不符（如字符串）时当作缺失，而不是让整行解析失败
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let v = <serde_json::Value as serde::Deserialize>::deserialize(d)?;
+    Ok(serde_json::from_value(v).ok())
+}
+
+/// 收集 assistant 用量并去重。
+///
+/// Claude Code 把一条回复按内容块（thinking / text / tool_use）拆成多行写入，
+/// 每行都带着同一份 usage；直接累加会把用量放大 2~3 倍。
+/// 与 ccusage 相同，按 `message.id + requestId` 去重，只计第一次出现。
+#[derive(Default)]
+struct UsageCollector {
+    seen: std::collections::HashSet<String>,
+    events: Vec<crate::models::UsageEvent>,
+}
+
+impl UsageCollector {
+    fn push(&mut self, l: &CcLine, ts: Option<i64>) {
+        let Some(m) = l.message.as_ref() else { return };
+        let Some(u) = m.usage.as_ref() else { return };
+        if let (Some(id), Some(req)) = (m.id.as_deref(), l.request_id.as_deref()) {
+            if !self.seen.insert(format!("{id}:{req}")) {
+                return;
+            }
+        } else if let Some(id) = m.id.as_deref() {
+            if !self.seen.insert(id.to_string()) {
+                return;
+            }
+        }
+        let model = m.model.as_deref().unwrap_or("");
+        let cache_write = u.cache_creation_input_tokens.unwrap_or(0);
+        let t = Tokens {
+            input: u.input_tokens.unwrap_or(0),
+            output: u.output_tokens.unwrap_or(0),
+            cache_read: u.cache_read_input_tokens.unwrap_or(0),
+            cache_write,
+            // Claude Code 默认用 1 小时缓存（2× 输入价），按明细分开计费
+            cache_write_1h: u
+                .cache_creation
+                .as_ref()
+                .and_then(|c| c.ephemeral_1h_input_tokens)
+                .unwrap_or(0)
+                .min(cache_write),
         };
-        usd += (*i as f64 * pi + *o as f64 * po + *w as f64 * pcw + *r as f64 * pcr) / 1e6;
-    }
-    if usd > 0.0 {
-        Some(usd)
-    } else {
-        None
+        if t.input + t.output + t.cache_read + t.cache_write == 0 {
+            return;
+        }
+        let mult = if u.speed.as_deref() == Some("fast") {
+            crate::pricing::fast_multiplier(model)
+        } else {
+            1.0
+        };
+        self.events
+            .push(priced_event(ts.unwrap_or(0), model, t, mult));
     }
 }
 
@@ -383,5 +468,47 @@ mod tests {
         let msgs = a.read_messages(&s, 10);
         assert_eq!(msgs.len(), 4);
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// 回归：同一条回复按内容块拆成多行，usage 只能计一次；
+    /// 1 小时缓存写入按 2× 输入价；子代理文件的用量归入父会话
+    #[test]
+    fn dedups_content_block_lines_and_counts_subagents() {
+        let dir = std::env::temp_dir().join(format!("sh-claude-dedup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sid-2/subagents")).unwrap();
+        let line = |ty: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-03-01T10:00:00.000Z","sessionId":"sid-2","requestId":"req_1","message":{{"id":"msg_1","model":"claude-opus-5-5","content":[{{"type":"{ty}","text":"x"}}],"usage":{{"input_tokens":2,"output_tokens":100,"cache_creation_input_tokens":1000,"cache_read_input_tokens":50000,"cache_creation":{{"ephemeral_1h_input_tokens":1000,"ephemeral_5m_input_tokens":0}},"speed":"standard"}}}}}}"#
+            )
+        };
+        let main = dir.join("sid-2.jsonl");
+        std::fs::write(
+            &main,
+            [line("thinking"), line("text"), line("tool_use")].join("\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("sid-2/subagents/agent-a.jsonl"),
+            r#"{"type":"assistant","timestamp":"2026-03-01T10:05:00.000Z","isSidechain":true,"requestId":"req_9","message":{"id":"msg_9","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":1000,"output_tokens":10}}}"#,
+        )
+        .unwrap();
+
+        let s = ClaudeCodeAdapter
+            .parse(&file_raw_ref(&main).unwrap())
+            .unwrap();
+        assert_eq!(s.usage.len(), 2, "三行同一回复只计一次 + 一条子代理");
+        let main_ev = &s.usage[0];
+        assert_eq!(main_ev.output, 100);
+        assert_eq!(main_ev.cache_read, 50000);
+        // opus-5-5：2×$4 + 100×$20 + 1000×$8(1h) + 50000×$0.2 = $0.020008
+        assert!(
+            (main_ev.cost_usd - 0.020008).abs() < 1e-9,
+            "{}",
+            main_ev.cost_usd
+        );
+        assert_eq!(s.tokens_out, Some(110));
+        assert_eq!(s.tokens_in, Some(2 + 1000 + 50000 + 1000));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

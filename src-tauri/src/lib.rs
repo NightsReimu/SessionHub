@@ -3,6 +3,7 @@ mod adapters;
 mod db;
 mod migrate;
 mod models;
+mod pricing;
 mod scanner;
 mod watcher;
 
@@ -63,7 +64,7 @@ impl AppState {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_adapters(state: tauri::State<AppState>) -> Vec<AdapterInfo> {
     let ctx = DetectCtx::new();
     state
@@ -83,7 +84,7 @@ fn list_adapters(state: tauri::State<AppState>) -> Vec<AdapterInfo> {
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn scan_sessions(app: tauri::AppHandle, state: tauri::State<AppState>, full: bool) -> ScanReport {
     let _scan_guard = state.scan_lock.lock();
     let emit = |p: ScanProgress| {
@@ -98,7 +99,7 @@ fn scan_sessions(app: tauri::AppHandle, state: tauri::State<AppState>, full: boo
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_sessions(
     state: tauri::State<AppState>,
     harness: Option<String>,
@@ -119,7 +120,7 @@ fn list_sessions(
     Ok(dtos)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn search_sessions(
     state: tauri::State<AppState>,
     query: String,
@@ -129,7 +130,7 @@ fn search_sessions(
     Ok(dtos)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_session_messages(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -146,7 +147,7 @@ fn get_session_messages(
     Ok(adapter.read_messages(&dto.session, limit.unwrap_or(300)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn resume_session(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -165,7 +166,7 @@ fn resume_session(
     actions::launch_in_terminal(&spec.argv, spec.cwd.as_deref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn launch_harness(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -184,7 +185,7 @@ fn launch_harness(
     actions::launch_in_terminal(&spec.argv, spec.cwd.as_deref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_session(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -208,7 +209,7 @@ fn delete_session(
     Ok(dto.session.raw_path.clone())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_session(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -220,7 +221,7 @@ fn backup_session(
     Ok(dest.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn export_session(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -260,7 +261,7 @@ fn export_session(
 
 /// 把会话迁移到另一个 harness：按目标原生格式生成会话文件，
 /// 目标 harness 用 resume_command 即可继续该对话
-#[tauri::command]
+#[tauri::command(async)]
 fn migrate_session(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -290,7 +291,7 @@ fn migrate_session(
     migrate::migrate(&dto.session, &messages, &target)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reveal_raw(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -301,7 +302,7 @@ fn reveal_raw(
     Ok(dto.session.raw_path.clone())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_session_meta(
     state: tauri::State<AppState>,
     harness_id: String,
@@ -314,19 +315,30 @@ fn set_session_meta(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_counts(state: tauri::State<AppState>) -> Result<Counts, String> {
     state.db.counts().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn get_stats(state: tauri::State<AppState>) -> Result<StatsOverview, String> {
-    let mut stats = state.db.stats(10).map_err(|e| e.to_string())?;
-    state.apply_raw_usable(&mut stats.top_sessions);
-    Ok(stats)
+/// 用量统计：前端按本地时区算好区间边界，后端按本地时区分桶
+#[tauri::command(async)]
+fn get_usage_report(
+    state: tauri::State<AppState>,
+    query: db::UsageQuery,
+) -> Result<UsageReport, String> {
+    let mut report = state
+        .db
+        .usage_report(&query, 12)
+        .map_err(|e| e.to_string())?;
+    for row in report.top_sessions.iter_mut() {
+        if let Some(dto) = row.session.as_mut() {
+            state.apply_raw_usable(std::slice::from_mut(dto));
+        }
+    }
+    Ok(report)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_hub_paths() -> HubPaths {
     let hub = actions::hub_dir();
     HubPaths {
@@ -337,7 +349,7 @@ fn get_hub_paths() -> HubPaths {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn watcher_start(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<bool, String> {
     let mut guard = state.watcher.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -353,14 +365,14 @@ fn watcher_start(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn watcher_stop(state: tauri::State<AppState>) -> Result<bool, String> {
     let mut guard = state.watcher.lock().map_err(|e| e.to_string())?;
     *guard = None;
     Ok(false)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn watcher_status(state: tauri::State<AppState>) -> bool {
     state.watcher.lock().map(|g| g.is_some()).unwrap_or(false)
 }
@@ -412,7 +424,7 @@ pub fn run() {
             reveal_raw,
             set_session_meta,
             get_counts,
-            get_stats,
+            get_usage_report,
             get_hub_paths,
             watcher_start,
             watcher_stop,
